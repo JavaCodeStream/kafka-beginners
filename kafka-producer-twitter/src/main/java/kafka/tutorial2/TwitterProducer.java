@@ -26,13 +26,13 @@ public class TwitterProducer {
     Logger logger = LoggerFactory.getLogger(TwitterProducer.class.getName());
 
     // use your own credentials - don't share them with anyone
-    String consumerKey = "";
-    String consumerSecret = "";
-    String token = "";
-    String secret = "";
+    String consumerKey = ""; // API key
+    String consumerSecret = ""; // API secret
+    String token = ""; // Access token
+    String secret = ""; // Access token secret
 
-    List<String> terms = Lists.newArrayList("bitcoin", "usa", "politics", "sport", "soccer");
-
+    List<String> terms = Lists.newArrayList("kafka");
+//    List<String> terms = Lists.newArrayList("bitcoin", "usa", "politics", "sport", "soccer");
 
     public TwitterProducer(){}
 
@@ -76,7 +76,7 @@ public class TwitterProducer {
                 client.stop();
             }
             if (msg != null){
-                logger.info(msg);
+                logger.info("Twitter tweets: " + msg);
                 producer.send(new ProducerRecord<>("twitter_tweets", null, msg), new Callback() {
                     @Override
                     public void onCompletion(RecordMetadata recordMetadata, Exception e) {

@@ -20,7 +20,7 @@ public class ConsumerDemo {
 
         String bootstrapServers = "127.0.0.1:9092";
         String groupId = "my-fourth-application";
-        String topic = "first_topic";
+        String topic = "second_topic";
 
         // create consumer configs
         Properties properties = new Properties();
@@ -28,7 +28,10 @@ public class ConsumerDemo {
         properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId);
-        properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"); // 3 options: earliest / latest / none
+        // earliest -> if we want to read from the very beginning of the topic
+        // latest -> if we want to read from new messages onwards.
+        // none -> throws error if there are no offsets being saved.
 
         // create consumer
         KafkaConsumer<String, String> consumer = new KafkaConsumer<String, String>(properties);

@@ -39,8 +39,8 @@ public class ElasticSearchConsumer {
         /////////// IF YOU USE LOCAL ELASTICSEARCH
         //////////////////////////
 
-        //  String hostname = "localhost";
-        //  RestClientBuilder builder = RestClient.builder(new HttpHost(hostname,9200,"http"));
+          String hostname = "localhost";
+          RestClientBuilder builder = RestClient.builder(new HttpHost(hostname,9200,"http"));
 
 
         //////////////////////////
@@ -48,23 +48,23 @@ public class ElasticSearchConsumer {
         //////////////////////////
 
         // replace with your own credentials
-        String hostname = ""; // localhost or bonsai url
-        String username = ""; // needed only for bonsai
-        String password = ""; // needed only for bonsai
+//        String hostname = ""; // localhost or bonsai url
+//        String username = ""; // needed only for bonsai
+//        String password = ""; // needed only for bonsai
 
         // credentials provider help supply username and password
-        final CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
-        credentialsProvider.setCredentials(AuthScope.ANY,
-                new UsernamePasswordCredentials(username, password));
-
-        RestClientBuilder builder = RestClient.builder(
-                new HttpHost(hostname, 443, "https"))
-                .setHttpClientConfigCallback(new RestClientBuilder.HttpClientConfigCallback() {
-                    @Override
-                    public HttpAsyncClientBuilder customizeHttpClient(HttpAsyncClientBuilder httpClientBuilder) {
-                        return httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider);
-                    }
-                });
+//        final CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
+//        credentialsProvider.setCredentials(AuthScope.ANY,
+//                new UsernamePasswordCredentials(username, password));
+//
+//        RestClientBuilder builder = RestClient.builder(
+//                new HttpHost(hostname, 443, "https"))
+//                .setHttpClientConfigCallback(new RestClientBuilder.HttpClientConfigCallback() {
+//                    @Override
+//                    public HttpAsyncClientBuilder customizeHttpClient(HttpAsyncClientBuilder httpClientBuilder) {
+//                        return httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider);
+//                    }
+//                });
 
         RestHighLevelClient client = new RestHighLevelClient(builder);
         return client;
@@ -106,6 +106,7 @@ public class ElasticSearchConsumer {
     public static void main(String[] args) throws IOException {
         Logger logger = LoggerFactory.getLogger(ElasticSearchConsumer.class.getName());
         RestHighLevelClient client = createClient();
+
 
         KafkaConsumer<String, String> consumer = createConsumer("twitter_tweets");
 
@@ -172,7 +173,7 @@ public class ElasticSearchConsumer {
         }
 
         // close the client gracefully
-        // client.close();
+//         client.close();
 
     }
 }
