@@ -1,0 +1,2714 @@
+Kafka Tutorial
+==================================
+
+Ref# https://medium.com/streamthoughts/apache-kafka-rebalance-protocol-or-the-magic-behind-your-streams-applications-e94baf68e4f2
+
+Apache Kafka is a streaming platform based on a distributed publish/subscribe pattern. First, processes called producers send messages into topics, which are managed and stored by a cluster of brokers. Then, processes called consumers subscribe to these topics for fetching and processing published messages.
+
+A topic is distributed across a number of brokers so that each broker manages subsets of messages for each topic - these subsets are called partitions.
+The number of partitions is defined when a topic is created and can be increased over time (but be careful with that operation).
+
+What is important to understand is that a partition is actually the unit of parallelism for Kafka’s producers and consumers.
+
+On the producer side, the partitions allow writing messages in parallel. If a message is published with a key, then, by default, the producer will hash the given key to determine the destination partition.
+This provides a guarantee that all messages with the same key will be sent to the same partition. In addition, a consumer will have the guarantee of getting messages delivered in order for that partition.
+
+On the consumer side, the number of partitions for a topic bounds the maximum number of active consumers within a consumer group. A consumer group is the mechanism provided by Kafka to group multiple consumer clients, into one logical group, in order to load balance the consumption of partitions.
+Kafka provides the guarantee that a topic-partition is assigned to only one consumer within a group.
+
+For example, the illustration below depicts a consumer group named A with three consumers. Consumers have subscribed to Topic A (no. of partition: 4) and the partition assignment is : P0 & P3 to C1, P1 to C2, P2 to C3.
+
+Topic A/Partition0		------->		Consumer1		--->	group.id=A
+Topic A/Partition1		------->		Consumer2		--->	group.id=A
+Topic A/Partition2		------->		Consumer3		--->	group.id=A
+Topic A/Partition3		------->		Consumer1		--->	group.id=A
+
+If a consumer leaves the group after a controlled shutdown or crashes then all its partitions will be reassigned automatically among other consumers. In the same way, if a consumer (re)join an existing group then all partitions will be also rebalanced between the group members.
+The ability of consumers clients to cooperate within a dynamic group is made possible by the use of the so-called "Kafka Rebalance Protocol".
+
+
+Topics
+==================================
+- a particular steram of data
+- similar to a table in a database (without all the constarints)
+- you can have as many topics as you want.
+- a topic is identified by its name.
+
+Topics are split in 1 or more partitions
+ex: partitions starts with 0 based index.
+Kafka Topic:
+	- Partition 0  	== 	0,1,2,3,4,5,6,7,8,9,10,11,12
+	- Partition 1	==	0,1,2,3,4,5,7,8
+	- Partition 2	==	0,1,2,3,4,5,6,7,8,9,10
+
+- Each partition is ordered.
+- each message within a partition gets an incremental id, called offset.
+- we need to set the no. of partitions before creating a topic but the same can be changed later.
+
+example usecase:
+say you have a fleet of trucks, each truck reports its GPS position to a Kafka
+
+- you can have a topic "truck_gps" that contains the position of all trucks.
+- each truck will send a message to Kafka every 20 sec, each message will contain the truck ID and the truck position (latitude and longitude)
+- we choose to create that topic with 10 partitions (arbitary number)
+- will consume these data to create a live location dashboard.
+
+Offsets
+----------------------------------------
+- offset only have a meaning for a specific partition.
+eg: offset 3 in partition 0 does not represent the same data as offset 3 in partition 1
+- Order is guranteed only within a partition (not across partitions)
+
+- data in Kafka is kept only for a limited time (default 7 days), but offsets keeps on increasing, never go back and starts againg from 0
+
+- once the messgae is written to a partition, it can't be updated. (henec messages in Kafka are immutable), writing a new msg will go at the end of partition.
+
+- msg is assigned randomly to a partition unless a key for the msg is provided.
+
+Brokers and Topics
+====================================================
+- A Kafka cluster is composed of multiple brokers (servers).
+- Each broker is identified with its ID (integer)
+- each broker contains certain topic partitions.
+- Bootstrap broker: are the rboker to which, the client connects and basically get connected to the entire cluster.
+- a good number to get started is 3 brokers, but some big clusters can have over 100 brokers.
+
+- ex: lets say we have 3 brokers in our kafka cluster, the ID we choose to start from 101
+	- create 1st topic Topic-A and it has 3 partitions.
+
+	- Kafka will automatically distribute the newly created topic partitions across all brokers and it would never put all the partitions into a single broker.
+
+	- create 2nd topic Topic-B and it has 2 partitions.
+	- create 3rd topic Topic-C and it has 4 partitions.
+
+Broker 101				Broker 102				Broker 103
+-----------				--------------------	-------------------
+Topic-A~Partition0		Topic-A~Partition1		Topic-A~Partition2
+
+Topic-B~Partition0		Topic-B~Partition1
+
+Topic-C~Partition0		Topic-C~Partition1		Topic-C~Partition2
+Topic-C~Partition3
+
+
+Topic replication factor
+====================================================
+- Topics should have a replication factor > 1 to protect any data loss.
+- This way if a broker is down, another broker can serve the data.
+- Replication factor is between 2-3, 3 is ideal.
+- Ex: Topic-A with 2 partition and replication factor 2
+
+
+Broker 101				Broker 102				Broker 103
+-----------				--------------------	-------------------
+Topic-A~Partition0(P)	Topic-A~Partition1(P)	Topic-A~Partition1(R)
+						Topic-A~Partition0(R)
+
+- here: Topic-A~Partition0(P) of broker 101 is replicated in Broker 102	as 	Topic-A~Partition0(R)
+and Topic-A~Partition1(P) of broker 102 is replicated in Broker 103	as 	Topic-A~Partition1(R)
+
+- for each partitions, there will be 1 primary and other replica partitions.
+- the broker for the primary partition, acts a a leader and responsible for receive and server data for that partition.
+- the other replica broker will synchronize the data.
+- therefore, each partition has one primary and multiple ISR (in-sync replica) partition.
+
+- Zookepper takes care of managing which broker for a given partition should be the leader. and in case the leader broker for a its primary partition goes down, zookeper election happens and one from its ISR partition, becomes leader.
+
+Producers
+============================================================
+- producers write data to topics.
+- its the kafka client SDK which takes the msg from client, connects to the bootstrap broker which decides which partition the new msg should be written.
+- In case of broker failures, Producers SDK gets automatically recover. we dont have to take care of broker failures.
+- The produces load balance the msgs to the available brokers automatically.
+- producers can choose to receive acknowledgement for data writes.
+acks=0: Producers wont wait for acknowledgement, hence it will not know in case the msg push gets failed for any reason. (possible data loss)
+acks=1 (default): Producer will wait for leader acknowledgement (limited data loss)
+acks=all: Leader + replicas acknowledgement (absolutely no data loss)
+
+Producers: Message keys
+------------------------------------------------------------
+- Producers can choose to send a key along with the message. the data type of the key could be anything. i.e. (string, number etc)
+- if key=null, data is sent round robin fashion to all the brokers.
+- If a key is sent. then all the messages with the same key will always go to the same partition.
+- A key is basically sent if we need msg ordering ex: we need msg to be orders for a specific truck ID, here: the key could be the truck_id
+- Kafka use key hashing to do this, depends on no. of partition for the topic.
+- we dont know, this key will go this partition, but we know, this key will always go to the same partition i.e. if a msg with key: truck_id_123 goes partition0 first, then all subsequent msgs with same key: truck_id_123 will surely go to the same partition0.
+
+ex:
+--------
+Broker 101					truck_id_123 msg will always be in partition0
+Topic-A/Partition0			truck_id_234 msg will always be in partition0
+
+
+Broker 101					truck_id_345 msg will always be in partition1
+Topic-A/Partition0			truck_id_456 msg will always be in partition1
+
+
+
+Consumers
+=========================================================
+- consumers read msg from a given topic name.
+- consumers know which broker to read from.
+- in case of broker failures, consumers know how to recover.
+- messages are read in order within each partitions.
+- consumers can be set up to read from a specific partition or from multiple partitions.
+- if consumers reading from multiple order the read of message are not ordered across partition, i.e. consumer will some msg from partition1 and some from partition2 and agin from partition1 etc.. but within each partition, the read of offsets are ordered.
+
+Consumer Groups
+---------------------------------------------------------
+- How these consumers read data from multiple partitions?
+- consumers (kafka SDK) read data in consumers groups.
+- each consumer within a group reads from exclusive partitions.
+- there can not be more than one consumer in a given group reading from same partition, if we need to add parallel consumers reading from same partition, they need to be added into multiple group.
+
+ex:
+Topic-A~Partition0
+Topic-A~Partition1
+Topic-A~Partition2
+
+consumer-grp-app1:
+------------------
+consumer-1		-------- reads from ------ Topic-A~Partition0 and Topic-A~Partition1
+consumer-2		-------- reads from ------ Topic-A~Partition2
+
+
+consumer-grp-app2:
+------------------
+consumer-1		-------- reads from ------ Topic-A~Partition0
+consumer-2		-------- reads from ------ Topic-A~Partition1
+consumer-3		-------- reads from ------ Topic-A~Partition2
+
+consumer-grp-app3:
+------------------
+consumer-1		-------- reads from ------ Topic-A~Partition0 and Topic-A~Partition1 and Topic-A~Partition2
+
+
+consumer-grp-app4 (more consumers than no. of partitions):
+------------------
+consumer-1		-------- reads from ------ Topic-A~Partition0
+consumer-2		-------- reads from ------ Topic-A~Partition1
+consumer-3		-------- reads from ------ Topic-A~Partition2
+consumer-4 (inactive)
+
+- consumer-4 will be inactive but if any of the active consumenrs goes down then immediately consumer-4 will replace and start consuming.
+
+
+Consumer Offsets
+===========================================================
+- *** to commit offsets. consumer must be consuming messages using a consumer group. else without a consumer group, the same message will get read again and again.
+- Kafka stores the offsets at which a consumer group has been reading. like check pointing or book marking.
+- The offsets committed live in a Kafka topic named: __consumer_offsets
+- when a consumer in a grp has processed data received from kafka, it commits the offsets i.e. books mark the offset has been read.
+- This book marking helps, when a consumer dies, and come back, it then be able to read back from where it left off.
+
+Delivery Semantics for consumers
+----------------------------------------------------------
+- Consumers choose when to commit offsets.
+- There are 3 delivery semantics:
+	- At most once.
+		- offsets are committed as soon as the message is recived by the consumer and passed on to the client.
+		- if the processing goes wrong after receive, the message will be lost (it can't read the same msg since the offsets will get increamented for the consumer.)
+	- At least once (usually preferred):
+		- offsets are committed after the message is received and processed.
+		- if the processing goes wrong, the message can be read again.
+		- since this option can result in processing the same msg multiple times untill the processing is success, make sure the processing logic is idempotent i.e. processing again and again the same msg won't impact your system.
+
+	- Exatctly once:
+		- can only be achieved for kafka to kafka workflows using kafka streams API.
+
+Kafka Broker Discovery
+==========================================================
+- Every kafka broker is also called a "bootstrap server"
+- That means that you only need to connect to one broker, and you will be connected to entire cluster.
+- each broker knows about all brokers, topics and partitions (all metedata of the kafka cluster)
+
+ex: lets say we have cluster of 5 brokers, and all these 5 brokers are also bootstrap brokers.
+
+- say, we have a Kafka client (producers/consumers), connects to Broker 101, (it can connect to any broker.),
+- when the connection is established, the client automatically does a metadata request from the connected bootstrap broker.
+- the broker 101, gets back with the list of all the brokers and its IPs and other details.
+- now the client connect to the needed brokers.
+- thats how the broker discovery works which is readyly available in kafka client SDK.
+- that why we dont configure all the broker IPs in kafka client config instead some of the broker IPs are sufficient.
+
+
+Zookeeper
+==========================================================
+- Zookeeper manages the brokers (keeps the list of them)
+- Zookeeper helps in performing leader electionfor partitions.
+- Zookeeper sends notifications to kafka in case of changes (new topic,delete topic, broker dies, broker re-joins etc.)
+- Kafka can;t work without Zookeeper.
+- Zookeeper by design operate with an odd number of servers (3,5,7), in handson, we will have 1 zookeper, but in real produstion we will have 3,5,7 zookeper.
+- so basically, the Kafka cluster of brokers ae connected to the Zookeeper cluster (with one leader zookeper server and rest are zookeper follower servers.)
+
+Kafka Guarantees
+=========================================================
+- Messages are appended to a topic-partition in the order they are sent.
+- Consumers read messages in the order stored in atopic-partition.
+- with a replication factor of N, producers and consumers can tolerate up to N-1 brokers being dowm.
+- This is why a replication factor od 3 is golden rule.
+	- allows for one broker to be taken down for maintenance.
+	- allows for another broker to be taken down unexpectedly.
+- As long as the number of partitions remains constant for a topic (no new partitions), the same key will always go to the same partition.
+
+
+Kafka Setup
+==========================================================
+FAQ for Setup Problems
+Please refer to this lecture first if you have setup problems.
+=====================
+
+> Zookeeper - java.net.BindException: Address already in use
+
+Something is already occupying your port 2181. Figure out which application it is and stop it
+
+> Kafka - org.apache.kafka.common.KafkaException: Socket server failed to bind to 0.0.0.0:9092: Address already in use.
+
+Something is already occupying your port 9092. Figure out what it is and stop it.
+Otherwise, if you really insist, you can change the Kafka port by adding the following line to server.properties
+
+# example for port 9093
+listeners=PLAINTEXT://:9093
+> My topics are losing their data after a while
+
+This is how Kafka works. Data is only retained for 7 days.
+
+> The topics list is disappearing
+
+Make sure you have changed the Zookeeper dataDir=/path/to/data/zookeeper , and Kafka log.dirs=/path/to/data/kafka
+
+> I have launched Kafka in a VM or in the Cloud, and I can't produce to Kafka
+
+If you can't produce to Kafka, it's possible you are using a VM and this can break the Kafka behaviour. Please look at the annex lectures for solutions of how to deal with that. I strongly recommend doing this tutorial using the Kafka binaries and localhost
+
+
+Kafka issues in Windows
+========================================================
+we may face the below errors in kafka-server cmd prompt from time to time.
+
+[2020-12-31 17:59:17,782] WARN Stopping serving logs in dir D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka (kafka.log.LogManager)
+[2020-12-31 17:59:17,784] ERROR Shutdown broker because all log dirs in D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka have failed (kafka.log.LogManager)
+
+
+- The fix is just to delete the contenets of Kafka log dir.
+log.dirs=D:/work/learn/kafka/kafka_2.12-2.6.0/data/kafka
+
+- start the kafka-server.
+cd D:\work\learn\kafka\kafka_2.12-2.6.0
+D:\work\learn\kafka\kafka_2.12-2.6.0>kafka-server-start.bat config\server.properties
+
+
+Kafka Download:
+--------------------------------------------------------
+Download Kafka latest version Scala 2.12 variant from below site:
+
+https://kafka.apache.org/downloads => click on Scala 2.12  - kafka_2.12-2.7.0.tgz (asc, sha512) ==> https://mirrors.estointernet.in/apache/kafka/2.7.0/kafka_2.12-2.7.0.tgz
+
+use 7-zip to extract. extract twice. and paste in D:\work\learn\kafka\
+
+D:\work\learn\kafka\kafka_2.12-2.6.0
+
+- open cmd.
+- cd D:\work\learn\kafka\kafka_2.12-2.6.0
+- D:
+- java -version
+D:\work\learn\kafka\kafka_2.12-2.6.0>  bin\windows\kafka-topics.bat
+
+- we can get windows defender firwall alarm, just allow access.
+
+- set D:\work\learn\kafka\kafka_2.12-2.6.0\bin\windows to system variabl in environment variables for us to be able to run kafka scripts from any where.
+
+- we should be able to run kafka-topics.bat from anywhere.
+
+- kafka-topics.bat
+
+this will print all the options available to execute the above command.
+
+- create the below folders under D:\work\learn\kafka\kafka_2.12-2.6.0
+
+data\kafka i.e. D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka --> to hold the kafka data files.
+data\zookeeper i.e. D:\work\learn\kafka\kafka_2.12-2.6.0\data\zookeeper --> to hold the zookeeper files
+
+
+- start zookeeper server and keep it running
+------------------------------------------------------------
+- edit zookeeper.properties: (update the kafka data dir)
+D:\work\learn\kafka\kafka_2.12-2.7.0\config\zookeeper.properties
+
+# the directory where the snapshot is stored.
+#dataDir=/tmp/zookeeper
+dataDir=D:/work/learn/kafka/kafka_2.12-2.7.0/data/zookeeper
+
+- start zookeeper server
+- open cmd
+- cd D:\work\learn\kafka\kafka_2.12-2.7.0
+- d:
+- zookeeper-server-start.bat config\zookeeper.properties
+
+if everything works well, we get a log at the end saying:
+
+[2020-12-20 02:56:55,362] INFO binding to port 0.0.0.0/0.0.0.0:2181 (org.apache.zookeeper.server.NIOServerCnxnFactory)
+
+- if we go to D:/work/learn/kafka/kafka_2.12-2.7.0/data/zookeeper, we should see a new folder verson2 created
+
+
+- start Kafka server:
+------------------------------------------------------------
+- edit config\server.properties
+D:\work\learn\kafka\kafka_2.12-2.7.0\config\server.properties
+
+# A comma separated list of directories under which to store log files
+#log.dirs=/tmp/kafka-logs
+log.dirs=D:/work/learn/kafka/kafka_2.12-2.7.0/data/kafka
+
+- start Kafka server
+- open a new cmd, since we need the zookeeper running on previoud cmd.
+- cd D:\work\learn\kafka\kafka_2.12-2.7.0
+- d:
+- kafka-server-start.bat config\server.properties
+
+if everything works well, we get a log at the end saying:
+
+[2021-01-05 09:27:53,249] INFO Kafka version: 2.7.0 (org.apache.kafka.common.utils.AppInfoParser)
+[2021-01-05 09:27:53,250] INFO Kafka commitId: 448719dc99a19793 (org.apache.kafka.common.utils.AppInfoParser)
+[2021-01-05 09:27:53,250] INFO Kafka startTimeMs: 1609819073246 (org.apache.kafka.common.utils.AppInfoParser)
+[2021-01-05 09:27:53,252] INFO [KafkaServer id=0] started (kafka.server.KafkaServer)
+[2021-01-05 09:27:53,337] INFO [broker-0-to-controller-send-thread]: Recorded new controller, from now on will use broker 0 (kafka.server.BrokerToControllerRequestThread)
+
+
+- if we go to D:/work/learn/kafka/kafka_2.12-2.6.0/data/kafka, we should see a a bunch of files created.
+
+- start Kafka Topic:
+------------------------------------------------------------
+kafka-topics.bat
+
+kafka-topics.bat --bootstrap-server localhost:9092 --list
+
+
+Kafka Topics CLI commands
+==========================================================
+- Make sure both Zookeeper and Kafka server is started in its command line prompts.
+
+- Open the 3rd CMD
+
+- cd D:\work\learn\kafka\kafka_2.12-2.7.0
+- d:
+
+
+Note: --zookeeper 127.0.0.1:2181 is deprecated since Kafka 2.2
+
+- to know all the commands just type: kafka-topics.bat and enter.
+
+C:\Users\pauls> kafka-topics.bat --bootstrap-server localhost:9092
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092
+Command must include exactly one action: --list, --describe, --create, --alter or --delete
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic first_topic --create
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic first_topic.
+
+- if we dont specify the partitions no, then it takes by default no. of partitions configured in server.properties
+
+# The default number of log partitions per topic.
+num.partitions=1
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic first_topic --describe
+Topic: first_topic      PartitionCount: 1       ReplicationFactor: 1    Configs: segment.bytes=1073741824
+        Topic: first_topic      Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic second_topic --create --partitions 3 --replication-factor 1
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic second_topic.
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --list
+first_topic
+second_topic
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic second_topic --describe
+Topic: second_topic     PartitionCount: 3       ReplicationFactor: 1    Configs: segment.bytes=1073741824
+        Topic: second_topic     Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: second_topic     Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+        Topic: second_topic     Partition: 2    Leader: 0       Replicas: 0     Isr: 0
+
+
+- since kafka is locally installed. hence kept the replication-factor 1
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --create --topic twitter_tweets --partitions 6 --replication-factor 1
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic twitter_tweets.
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --list
+__consumer_offsets
+first_topic
+new_topic
+second_topic
+twitter_tweets
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic twitter_tweets --describe
+Topic: twitter_tweets   PartitionCount: 6       ReplicationFactor: 1    Configs: segment.bytes=1073741824
+        Topic: twitter_tweets   Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 2    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 3    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 4    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 5    Leader: 0       Replicas: 0     Isr: 0
+
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic second_topic --delete
+
+Kafka Console Producer CLI
+================================================================================
+C:\Users\pauls>kafka-console-producer.bat
+
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9092 --topic second_topic
+
+- if the above commands works well, we will see a cursor asking to type something which will get pushed to kafka topic.
+
+- type something like:
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9092 --topic second_topic
+>hellp sandip
+>hi
+>bye
+
+- press CTRL+C to stop the console producer.
+>Terminate batch job (Y/N)? y
+
+- set the acks
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9092 --topic second_topic --producer-property acks=all
+>again hello sandip
+>again hi
+>again bye
+>
+
+- if we pass a non existing topic name like below:
+
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9092 --topic new_topic
+>send to new_topic
+[2020-12-20 03:40:30,026] WARN [Producer clientId=console-producer] Error while fetching metadata with correlation id 3 : {new_topic=LEADER_NOT_AVAILABLE} (org.apache.kafka.clients.NetworkClient)
+>again send to new_topic
+>
+
+- we saw, the kafka-console-producer.bat command did complain anything, but while we types some message and hit enter, it throws erro saying "new_topic=LEADER_NOT_AVAILABLE" i.e. during posting the new message, kafka first creates the topic and then zookeeper perfoms the leader election, which takes time but the producer auto recoverd, hence the 2nd msg went through.
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --list
+first_topic
+new_topic
+second_topic
+
+- by default no. of partition get 1.
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic new_topic --describe
+Topic: new_topic        PartitionCount: 1       ReplicationFactor: 1    Configs: segment.bytes=1073741824
+        Topic: new_topic        Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+
+- edit config\server.properties to change the default no. of partitions gets allocated while creating a new topic.
+
+- edit D:\work\learn\kafka\kafka_2.12-2.6.0\config\server.properties
+
+# The default number of log partitions per topic. More partitions allow greater
+# parallelism for consumption, but this will also result in more files across
+# the brokers.
+#num.partitions=1
+num.partitions=3
+
+- always create topic before starting producing messages to a given topic,
+
+
+- Producer with keys
+kafka-console-producer.bat --broker-list localhost:9092 --topic first_topic --property parse.key=true --property key.separator=,
+> key,value
+> another key,another value
+
+
+Kafka Console Consumer CLI
+==============================================================================================
+C:\Users\pauls>kafka-console-consumer.bat
+
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9092 --topic second_topic
+
+- if the above commands works well, we will see a cursor ready to consume messages. Now it does not consume any older messages that was produced befire the consumer console started
+
+- now open 2 cmd, one for producer and another for consumer.
+
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9092 --topic second_topic
+>hi
+>hello
+>
+
+- C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic
+hi
+hello
+
+- use --from-beginning if we need to consume all previously produced messages that have not yet received,
+
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --from-beginning
+hi
+again bye
+hi
+hello
+again hello sandip
+hellp sandip
+bye
+again hi
+hi
+
+- Consumer with keys
+kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic first_topic --from-beginning --property print.key=true --property key.separator=,
+
+
+Kafka Consumers in Group
+=============================================================================================
+https://dzone.com/articles/dont-use-apache-kafka-consumer-groups-the-wrong-wa
+
+What Is a Consumer Group?
+there is a common architecture pattern:  a group of application nodes collaborates to consume messages, often scaling out as message volume goes up, and handling the scenario where nodes crash or drop out. This pattern generally keeps the data and messages flowing with reliability and with certainty even as application nodes come and go.
+
+A Consumer Group’s Relationship to Partitions
+- A Consumer Group based application may run on several nodes, and when they start up they coordinate with each other in order to split up the work.
+- Each Consumer node can read a partition and one can split up the partitions to match the number of consumer nodes as needed.
+- If the number of Consumer Group nodes is more than the number of partitions, the excess nodes remain idle. This might be desirable to handle failover.
+- If there are more partitions than Consumer Group nodes, then some nodes will be reading more than one partition.
+
+Reading Multiple Partitions on One Node
+- There are a couple of tricky things to consider as one designs  a Consumer Group.  If a consumer node takes multiple partitions or ends up taking multiple partitions on failover, those partitions will appear intermingled, if viewed as a single stream of messages. So a Consumer Group application could get row #100 from partition 3, then row #90 from partition 4, then back to partition 3 for row #101.
+- Nothing in Kafka can guarantee order across partitions, as only messages within a partition are in order.  So either order should not matter to the consumer application, or the consumer application is able to order these partitions by splitting the stream appropriately.
+
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-firts-grp-app
+
+- lets proove the above consumer group theory of 3 consumers of the same grp consuming from a topic with 3 partition -> messages received.
+
+- open cmd and run below producer console command.
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9092 --topic second_topic
+>msg1
+>msg2
+>msg3
+>msg4
+>msg5
+
+- open 3 cmd and run below command
+
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-firts-grp-app
+msg1
+msg2
+
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-firts-grp-app
+msg3
+msg5
+
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-firts-grp-app
+msg4
+
+
+- Check the commit offset.
+	- start a new consumer with a new group and use --from-beginning
+	- kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-second-grp-app C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-second-grp-app --from-beginning
+	hi
+	again bye
+	hi
+	hello
+	msg1
+	msg4
+	msg6
+	msg8
+	msg10
+	msg12
+	m3
+	m4
+	m22
+	v
+	vs
+	v
+	w
+	..
+	..
+	Processed a total of 113 messages
+
+	- C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-second-grp-app --from-beginning
+	- now since a group ("my-second-grp-app ") is used, if we stop the consumer and start again using the same group and try to consume previous messages, we will not be able to.. since all the previous msg have already been committed.
+	- Terminate batch job (Y/N)? y
+	C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-second-grp-app --from-beginning
+	_
+
+
+Kafka Consumer Group CLI
+====================================================================================
+kafka-consumer-groups.bat
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --list
+my-second-grp-app
+my-firts-grp-app
+console-consumer-295
+
+- if we dont specify any group while starting a kafka consumer, kafka initiates a brand new group (with an arbitary no.) called: console-consumer-295
+
+- this below command shows a details about the group, like what the CURRENT-OFFSET, LOG-END-OFFSET(i.e. the committed offset), LAG (i.e.how many msg are lagging of current offset than the last committed offset)
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --describe --group my-firts-grp-app
+
+GROUP            TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID                                                      HOST            CLIENT-ID
+my-firts-grp-app second_topic    0          33              33              0               consumer-my-firts-grp-app-1-0cb61bac-ad11-49b4-bd26-d44edd95426a /192.168.0.106  consumer-my-firts-grp-app-1
+my-firts-grp-app second_topic    1          41              41              0               consumer-my-firts-grp-app-1-0cb61bac-ad11-49b4-bd26-d44edd95426a /192.168.0.106  consumer-my-firts-grp-app-1
+my-firts-grp-app second_topic    2          39              39              0               consumer-my-firts-grp-app-1-4d6614bf-a934-4b41-b038-a56f6084c73f /192.168.0.106  consumer-my-firts-grp-app-1
+
+
+Kafka Consumer Group Rebalancing
+====================================================================================
+https://chrzaszcz.dev/2019/06/kafka-rebalancing/
+
+What is a rebalancing?
+------------------------------------------------------------------------------------
+As you know, all messages on a topic are spread out among the members of consumer group. Every consumer has its set of partitions assigned exclusively to it and rebalancing is all about maintaining all partitions assigned to active consumers.
+
+When one consumer dies Kafka needs to reassign orphaned partitions to the rest of the consumers. Similarly, when a new consumer joins the group Kafka needs to free up some partitions and assign them to the new consumers (if it can).
+
+States of Consumer Group
+First things first, every consumer group is in one particular state. Allowed states are defined in GroupMetadata class, and you can check it out in Kafka’s github. You will see all possibilities. We can see that there are 5 of them, and thanks to verbose comments for each state, we can easily tell what they mean:
+
+Empty - The group exists but no one is in it
+Stable - The rebalancing already took place and consumers are happily consuming.
+PreparingRebalance - Something has changed, and it requires the reassignment of partitions, so Kafka is the middle of rebalancing.
+CompletingRebalance - Kafka is still rebalancing the group. Why there are 2 states for that? More on that in a minute.
+Dead - The group is going to be removed from this Kafka node soon. It might be due to the inactivity, or the group is being migrated to different group coordinator.
+
+The group starts as an empty group, and as you see the first consumer that connects to the group triggers rebalancing. Having it finished, Kafka switches the group to the stable state. From there if - let’s say - a new consumer wants to join, then Kafka again triggers rebalancing for the group.
+
+Of course if all consumers have left the group, then it is again in the Empty state.
+
+Why two states for rebalancing?
+------------------------------------------------------------------------------------
+Ok, so we already said that rebalancing consists of two states - PreparingRebalancing and CompletingRebalancing.
+
+Why? Well, rebalancing is all about preparing new assignment of partitions, so first it needs to gather members of the group and then assign chunks of the topic, thus two phases. In PreparingRebalancing group is waiting for consumers to join and in CompletingRebalancing it gives out an assignment.
+
+From the high-level point of view rebalancing might look like this:
+
+1. One consumer sends a message to join the group (a.k.a. “I want to join to the group”).
+2. Kafka switches group to PreparingRebalancing state, disconnects all the old members, and waits for them to rejoin.
+3. When time is up, Kafka chooses one of the consumers to be a group leader.
+4. Kafka:
+	4a. Sends all the Followers a bunch of metadata (successful join).
+	4b. Sends the Leader the same data as for the followers plus list of all followers.
+5. Followers send request for assignment (a.k.a. “What are my partitions?")
+6. Leader generates assignment and sends it to Kafka. It also asks for its own assignment.
+7. Kafka receives the assignment from the Leader and responds to the Followers with their particular set of partitions.
+
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --list --state
+GROUP                 STATE
+my-fourth-application Stable
+
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --describe --group my-fourth-application --state
+
+GROUP                     COORDINATOR (ID)          ASSIGNMENT-STRATEGY  STATE           #MEMBERS
+my-fourth-application     DESKTOP-FTR47NO:9092 (0)  range                Stable          3
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --describe --group my-fourth-application --state
+
+GROUP                     COORDINATOR (ID)          ASSIGNMENT-STRATEGY  STATE           #MEMBERS
+my-fourth-application     DESKTOP-FTR47NO:9092 (0)  range                Stable          1
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --describe --group my-fourth-application --state
+
+Consumer group 'my-fourth-application' has no active members.
+
+GROUP                     COORDINATOR (ID)          ASSIGNMENT-STRATEGY  STATE           #MEMBERS
+my-fourth-application     DESKTOP-FTR47NO:9092 (0)                       Empty           0
+
+
+
+Resetting Offsets
+====================================================================================
+- kafka-consumer-groups command has an option to reset the offset for all the consumers of a given consumer group., we can reset to some pre-defined values (like: --to-arliest, --to-datetime, --to-latest etc..)
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --group my-firts-grp-app --topic second_topic --reset-offsets --to-earliest --execute
+
+
+What about UIs? Conduktor
+====================================================================================
+Conduktor - Kafka GUI
+Kafka does not come bundled with a UI, but I have created a software name Conduktor to help you use Kafka visually.
+
+You can download Conduktor here: https://www.conduktor.io/
+
+Conduktor allows you to perform all the administrative tasks on Kafka (such as creating topics, partitions, etc), as well as produce and consume, all from within a desktop application that should work on Windows, Mac, and Linux.
+
+Please look these two pages in cases you're having issues:
+
+Documentation: https://www.conduktor.io/docs
+
+The FAQ for installation issues (at the bottom of the page): https://www.conduktor.io/download
+
+KafkaCat as a replacement for Kafka CLI
+====================================================================================
+KafkaCat (https://github.com/edenhill/kafkacat) is an open-source alternative to using the Kafka CLI, created by Magnus Edenhill.
+
+While KafkaCat is not used in this course, if you have any interest in trying it out, I recommend reading: https://medium.com/@coderunner/debugging-with-kafkacat-df7851d21968
+
+
+
+Java Producer
+=====================================================================================
+- clone github project: https://github.com/JavaCodeStream/kafka-beginners
+- Kafka Producer configs can be found here: https://kafka.apache.org/documentation/#producerconfigs
+
+- look at ProducerDemo.class
+- simple producer demo example.
+- start the kafka-console-consumer in a cmd
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic second_topic --group my-second-grp-app
+hello world
+
+- run ProducerDemo
+last line of log should show like below:
+[main] INFO org.apache.kafka.clients.producer.KafkaProducer - [Producer clientId=producer-1] Closing the Kafka producer with timeoutMillis = 9223372036854775807 ms.
+
+- we should see the msg "hello world" received at the consumer side.
+
+Java Producer with keys
+=====================================================================================
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-basics/src/main/java/kafka/tutorial1/ProducerDemoKeys.java
+
+
+Java Producer with callbacks
+=====================================================================================
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-basics/src/main/java/kafka/tutorial1/ProducerDemoWithCallback.java
+
+
+Java Consumer
+======================================================================================
+- https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-basics/src/main/java/kafka/tutorial1/ConsumerDemo.java
+- Kafka Producer configs can be found here: https://kafka.apache.org/documentation/#consumerconfigs
+
+- 2 consume APIs:
+	- kafkaConsumer.subscribe() - regular use, used with the consumer group Id
+	- kafkaConsumer.assign() and seek()  -- very rarely used without the consumer group Id, mainly to re-process some specific messages from a specific partition of a topic.
+
+- sample consumer demo class: ConsumerDemo.class
+- start the ConsumerDemo.class
+- this will now poll for new messages from the topic in ever 100 milli sec.
+
+- Run the above Java Producer (onfirm the topic): https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-basics/src/main/java/kafka/tutorial1/ProducerDemoKeys.java
+
+
+Java Consumer inside Consumer Group Rebalancing Know-How
+=======================================================================================
+
+- Run 1st instance of ConsumerDemo.java
+- Look at the logs:
+	- it says:
+		- Revoking previously assigned partitions [] => (Re-)joining group => Setting newly assigned partitions [second_topic-1, second_topic-0, second_topic-2]
+
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka version : 2.0.0
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka commitId : 3402a8361b734732
+[main] INFO org.apache.kafka.clients.Metadata - Cluster ID: CSNNgVzGRf2oko_ihDRioA
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Discovered group coordinator DESKTOP-FTR47NO:9092 (id: 2147483647 rack: null)
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Revoking previously assigned partitions []
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] (Re-)joining group
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Successfully joined group with generation 6
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Setting newly assigned partitions [second_topic-1, second_topic-0, second_topic-2]
+
+
+- Run 2nd instance of ConsumerDemo.java i.e. this consumer of the group (groupId=my-fourth-application) has now got second_topic-2 partitions assigned.
+- Look at the logs:
+	- it says:
+		- Revoking previously assigned partitions [] => (Re-)joining group => Setting newly assigned partitions [second_topic-2]
+
+
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka version : 2.0.0
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka commitId : 3402a8361b734732
+[main] INFO org.apache.kafka.clients.Metadata - Cluster ID: CSNNgVzGRf2oko_ihDRioA
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Discovered group coordinator DESKTOP-FTR47NO:9092 (id: 2147483647 rack: null)
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Revoking previously assigned partitions []
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] (Re-)joining group
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Successfully joined group with generation 7
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Setting newly assigned partitions [second_topic-2]
+
+
+- Look at the logs for 1st consumerDemo. this consumer of the group (groupId=my-fourth-application) has now got second_topic-1, second_topic-0 partitions assigned.
+- Look at the logs:
+	- it says:
+		- Attempt to heartbeat failed since group is rebalancing => Revoking previously assigned partitions [second_topic-1, second_topic-0, second_topic-2] => (Re-)joining group => Setting newly assigned partitions [second_topic-1, second_topic-0]
+
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Attempt to heartbeat failed since group is rebalancing
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Revoking previously assigned partitions [second_topic-1, second_topic-0, second_topic-2]
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] (Re-)joining group
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Successfully joined group with generation 7
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Setting newly assigned partitions [second_topic-1, second_topic-0]
+
+
+
+- Run the https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-basics/src/main/java/kafka/tutorial1/ProducerDemoKeys.java
+- look at the consumpsion logs at both consumers:
+
+Consumer-1 (reading from its assigned partitions i.e. Partition: 0 & Partition: 1)
+------------------------------------------------------------------------------------------
+main] INFO kafka.tutorial1.ConsumerDemo - Key: id_0, Value: hello world - 0
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 1, Offset:2
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_1, Value: hello world - 1
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 0, Offset:3
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_3, Value: hello world - 3
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 0, Offset:4
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_6, Value: hello world - 6
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 0, Offset:5
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_8, Value: hello world - 8
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 1, Offset:3
+
+
+Consumer-2 (reading from its assigned partitions i.e. Partition: 2)
+------------------------------------------------------------------------------------------
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_2, Value: hello world - 2
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:5
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_4, Value: hello world - 4
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:6
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_5, Value: hello world - 5
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:7
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_7, Value: hello world - 7
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:8
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_9, Value: hello world - 9
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:9
+
+
+- Now starting the 3rd consumer within the same consumer group would result like below:
+
+- Logs for ConsumerDemo-3 (assigned partition: [second_topic-2])
+- Look at the logs:
+	- it says: Revoking previously assigned partitions [] => (Re-)joining group => Setting newly assigned partitions [second_topic-2]
+
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka version : 2.0.0
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka commitId : 3402a8361b734732
+[main] INFO org.apache.kafka.clients.Metadata - Cluster ID: CSNNgVzGRf2oko_ihDRioA
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Discovered group coordinator DESKTOP-FTR47NO:9092 (id: 2147483647 rack: null)
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Revoking previously assigned partitions []
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] (Re-)joining group
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Successfully joined group with generation 8
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Setting newly assigned partitions [second_topic-2]
+
+
+- Logs for ConsumerDemo-2 (assigned partition: [second_topic-1])
+- Look at the logs:
+	- it says: Attempt to heartbeat failed since group is rebalancing => Revoking previously assigned partitions [second_topic-2] => (Re-)joining group => Setting newly assigned partitions [second_topic-1]
+
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Attempt to heartbeat failed since group is rebalancing
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Revoking previously assigned partitions [second_topic-2]
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] (Re-)joining group
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Successfully joined group with generation 8
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Setting newly assigned partitions [second_topic-1]
+
+
+- Logs for ConsumerDemo-1 (assigned partition: [second_topic-0])
+- Look at the logs:
+	- it says: Attempt to heartbeat failed since group is rebalancing => Revoking previously assigned partitions [second_topic-1, second_topic-0] => (Re-)joining group => Setting newly assigned partitions [second_topic-0]
+
+
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Attempt to heartbeat failed since group is rebalancing
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Revoking previously assigned partitions [second_topic-1, second_topic-0]
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] (Re-)joining group
+[main] INFO org.apache.kafka.clients.consumer.internals.AbstractCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Successfully joined group with generation 8
+[main] INFO org.apache.kafka.clients.consumer.internals.ConsumerCoordinator - [Consumer clientId=consumer-1, groupId=my-fourth-application] Setting newly assigned partitions [second_topic-0]
+
+
+- Run the https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-basics/src/main/java/kafka/tutorial1/ProducerDemoKeys.java
+- look at the consumpsion logs at both consumers:
+
+Consumer-3 (reading from its assigned partitions i.e. second_topic-2)
+------------------------------------------------------------------------------------------
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_2, Value: hello world - 2
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:10
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_4, Value: hello world - 4
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:11
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_5, Value: hello world - 5
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:12
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_7, Value: hello world - 7
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:13
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_9, Value: hello world - 9
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 2, Offset:14
+
+
+Consumer-2 (reading from its assigned partitions i.e. second_topic-1)
+------------------------------------------------------------------------------------------
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_0, Value: hello world - 0
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 1, Offset:4
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_8, Value: hello world - 8
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 1, Offset:5
+
+
+Consumer-1 (reading from its assigned partitions i.e. second_topic-0)
+------------------------------------------------------------------------------------------
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_1, Value: hello world - 1
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 0, Offset:6
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_3, Value: hello world - 3
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 0, Offset:7
+[main] INFO kafka.tutorial1.ConsumerDemo - Key: id_6, Value: hello world - 6
+[main] INFO kafka.tutorial1.ConsumerDemo - Partition: 0, Offset:8
+
+- starting the 4th consumer will not make any change on the partition re-balancing since the no. of consumers reached the no. of partitions.
+
+
+Java Consumer with Thread instead of infinitelt polling using while (true)
+======================================================================================
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-basics/src/main/java/kafka/tutorial1/ConsumerDemoWithThread.java
+
+
+Java Consumer using Assign and Seek API
+======================================================================================
+- https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-basics/src/main/java/kafka/tutorial1/ConsumerDemoAssignSeek.java
+- assign and seek are mostly used to replay data or fetch a specific message from a specific partition of a topic.
+- we dont set the consumer group id (group.id) in the KafkaConsumer Properties
+
+// create consumer
+KafkaConsumer<String, String> consumer = new KafkaConsumer<String, String>(properties);
+
+// assign and seek are mostly used to replay data or fetch a specific message
+// assign
+TopicPartition partitionToReadFrom = new TopicPartition(topic, 0);
+long offsetToReadFrom = 15L;
+consumer.assign(Arrays.asList(partitionToReadFrom));
+
+// seek
+consumer.seek(partitionToReadFrom, offsetToReadFrom);
+
+
+Kafka Client version Bi-Directional Compatibility
+=======================================================================================
+- As of Kafka 0.10.2 (introduced in July 2017), your clients & Kafka Brokers have a capability called bi-directional compatibility (because API calls are now versioned)
+- This means:
+	- an OLDER client (ex: 1.1) can talk to a NEWER broker (2.0)
+	- A NEWER client (ex: 2.0) can also talk to an OLDER roker (1.1)
+
+https://www.confluent.io/blog/upgrading-apache-kafka-clients-just-got-easier/
+
+
+Client Configurations
+There exist a lot of options to:
+
+configure producer: https://kafka.apache.org/documentation/#producerconfigs
+
+configure consumers:  https://kafka.apache.org/documentation/#consumerconfigs
+
+
+Real World Exercise
+=========================================================================================
+Real-World Exercise:
+Before jumping to the next section for the solution, here are some pointers for some exercises:
+
+Twitter Producer
+-------------------
+
+The Twitter Producer gets data from Twitter based on some keywords and put them in a Kafka topic of your choice
+
+Twitter Java Client: https://github.com/twitter/hbc
+
+Twitter API Credentials: https://developer.twitter.com/
+
+ElasticSearch Consumer
+----------------------------
+The ElasticSearch Consumer gets data from your twitter topic and inserts it into ElasticSearch
+
+ElasticSearch Java Client: https://www.elastic.co/guide/en/elasticsearch/client/java-rest/6.4/java-rest-high.html
+
+ElasticSearch setup:
+----------------------------
+https://www.elastic.co/guide/en/elasticsearch/reference/current/setup.html
+
+OR https://bonsai.io/
+
+
+Twitter setup
+-------------------------------------------------------------------------------------------
+- Login to your twitter account. and navigate to developer.twiiter.com/
+- @SandipP97378066
+- fillup your country and add the below details in describe how you plan to use Twitter data and/or APIs.
+
+"I intend to use twitter feed to get real time data stream into am app that will put data into kafka and the data will end up at an ElasticSearch index and this is just a POC purpose, No commercial app will result out of this and I wont have any users other than myself. Twitter data will not be displayed rather extracts tweets on low volume terms."
+
+- follow the next steps to complete the forms and at the end it will ask for email verification, verify your email and you will be taken to the developer portal with instant activation of your developer application.
+- you need to create a new app. the name should be unique. ex: kafka-twitter-sandip
+- copy the API key, API secret, Bearer token, and at the app page, generate the access token and access token secret.
+- you can always regenerate these tokens if you think that these credentials might have compromised.
+
+- Google search -> github twitter java
+	- you will find a link called twitter hbc which is basically a java client to consume twitter stream API.
+	- https://github.com/twitter/hbc
+	- Hosebird Client (hbc) --A Java HTTP client for consuming Twitter's standard Streaming API
+
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-producer-twitter/pom.xml
+
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-producer-twitter/src/main/java/kafka/tutorial2/TwitterProducer.java
+
+- just add all the API keys and secrets correctly. i.e.:
+String consumerKey = ""; // API key
+String consumerSecret = ""; // API secret
+String token = ""; // Access token
+String secret = ""; // Access token secret
+
+- comment the kafka producer code just to confirm the twitter client is working as expected.
+
+- below logs to appear:
+
+[main] INFO kafka.tutorial2.TwitterProducer - Setup
+[main] INFO com.twitter.hbc.httpclient.BasicClient - New connection executed: Hosebird-Client-01, endpoint: /1.1/statuses/filter.json?delimited=length&stall_warnings=true
+
+
+[hosebird-client-io-thread-0] INFO com.twitter.hbc.httpclient.ClientBase - Hosebird-Client-01 Processing connection data
+[main] INFO kafka.tutorial2.TwitterProducer - {"created_at":"Wed Dec 30 03:23:40 +0000 2020","id":1344121949807497217,"id_str":"1344121949807497217","text":"RT @Naunaback: FAST GIVEAWAY 60MENIT! \ud83d\ude3b\n\n250k untuk 1 orang yang sudah follow aku dan;\n\n@mistcop \n*wajib RT+Like tweet yang aku kutip dibaw\u2026","source":"\u003ca href=\"http:\/\/twitter.com\/download\/android\" rel=\"nofollow\"\u003eTwitter for Android\u003c\/a\u003e","truncated":false,"in_reply_to_status_id":null,"in_reply_to_status_id_str":null,"in_reply_to_user_id":null,"in_reply_to_user_id_str":null,"in_reply_to_screen_name":null,"user":{"id":1294182474688262144,"id_str":"1294182474688262144","name":"Danzo46","screen_name":"danzo17979208","location":null,"url":null,"description":"never give up","translator_type":"none","protected":false,"verified":false,"followers_count":24,"friends_count":403,"listed_count":1,"favourites_count":625,"statuses_count":1745,"created_at":"Fri Aug 14 08:02:28 +0000 2020","utc_offset":null,"time_zone":null,"geo_enabled":false,"lang":null,"contributors_enabled":false,"is_translator":false,"profile_background_color":"F5F8FA","profile_background_image_url":"","profile_background_image_url_https":"","profile_background_tile":false,"profile_link_color":"1DA1F2","profile_sidebar_border_color":"C0DEED","profile_sidebar_fill_color":"DDEEF6","profile_text_color":"333333","profile_use_background_image":true,"profile_image_url":"http:\/\/pbs.twimg.com\/profile_images\/1339500219742834690\/JJYd5k2y_normal.jpg","profile_image_url_https":"https:\/\/pbs.twimg.com\/profile_images\/1339500219742834690\/JJYd5k2y_normal.jpg","default_profile":true,"default_profile_image":false,"following":null,"follow_request_sent":null,"notifications":null},"geo":null,"coordinates":null,"place":null,"contributors":null,"retweeted_status":{"created_at":"Wed Dec 30 03:21:15 +0000 2020","id":1344121341444644864,"id_str":"1344121341444644864","text":"FAST GIVEAWAY 60MENIT! \ud83d\ude3b\n\n250k untuk 1 orang yang sudah follow aku dan;\n\n@mistcop \n*wajib RT+Like tweet yang aku ku\u2026 https:\/\/t.co\/uovipumrxs","source":"\u003ca href=\"https:\/\/mobile.twitter.com\" rel=\"nofollow\"\u003eTwitter Web App\u003c\/a\u003e","truncated":true,"in_reply_to_status_id":null,"in_reply_to_status_id_str":null,"in_reply_to_user_id":null,"in_reply_to_user_id_str":null,"in_reply_to_screen_name":null,"user":{"id":1307946297060519936,"id_str":"1307946297060519936","name":"Nauna","screen_name":"Naunaback","location":"nomaden","url":"http:\/\/instagram.com\/mlardans","description":"Sponsor DM @naunacapek. || @loburikan #naunatesti Julid\/toxic blocked\ud83d\udeab|| for business inquiries: younaprill@gmail.com","translator_type":"none","protected":false,"verified":false,"followers_count":122374,"friends_count":204,"listed_count":289,"favourites_count":445,"statuses_count":13835,"created_at":"Mon Sep 21 07:34:44 +0000 2020","utc_offset":null,"time_zone":null,"geo_enabled":false,"lang":null,"contributors_enabled":false,"is_translator":false,"profile_background_color":"F5F8FA","profile_background_image_url":"","profile_background_image_url_https":"","profile_background_tile":false,"profile_link_color":"1DA1F2","profile_sidebar_border_color":"C0DEED","profile_sidebar_fill_color":"DDEEF6","profile_text_color":"333333","profile_use_background_image":true,"profile_image_url":"http:\/\/pbs.twimg.com\/profile_images\/1338413962564497416\/Le1SLTCM_normal.jpg","profile_image_url_https":"https:\/\/pbs.twimg.com\/profile_images\/1338413962564497416\/Le1SLTCM_normal.jpg","profile_banner_url":"https:\/\/pbs.twimg.com\/profile_banners\/1307946297060519936\/1607655882","default_profile":true,"default_profile_image":false,"following":null,"follow_request_sent":null,"notifications":null},"geo":null,"coordinates":null,"place":null,"contributors":null,"quoted_status_id":1344116778750902273,"quoted_status_id_str":"1344116778750902273","quoted_status":{"created_at":"Wed Dec 30 03:03:07 +0000 2020","id":1344116778750902273,"id_str":"1344116778750902273","text":"\ud83e\udd73\ud83c\udf8a New Years Giveaway! \ud83c\udf8a\ud83e\udd73\n\nI\u2019m giving 5 lucky people $100 each in #Bitcoin \n\nRules:\n\u2705 Tag 3 people\n\u2705 MUST Follow\u2026 https:\/\/t.co\/w5X27ezJn5","source":"\u003ca href=\"http:\/\/twitter.com\/download\/iphone\" rel=\"nofollow\"\u003eTwitter for iPhone\u003c\/a\u003e","truncated":true,"in_reply_to_status_id":null,"in_reply_to_status_id_str":null,"in_reply_to_user_id":null,"in_reply_to_user_id_str":null,"in_reply_to_screen_name":null,"user":{"id":1305687744929099776,"id_str":"1305687744929099776","name":"Mistcop","screen_name":"mistcop","location":"Playstation 5 & Blockchain","url":"https:\/\/www.buymeacoffee.com\/mistcop","description":"Streamer and Youtuber | #PS5 Gamer #Bitcoin and #ETH Enthusiast. | Youtube: https:\/\/t.co\/76i9IlYrKx Twitch: https:\/\/t.co\/vNa0JLjKee | Business: mistcop@protonmail.com","translator_type":"none","protected":false,"verified":true,"followers_count":43716,"friends_count":317,"listed_count":8,"favourites_count":179,"statuses_count":903,"created_at":"Tue Sep 15 02:00:03 +0000 2020","utc_offset":null,"time_zone":null,"geo_enabled":false,"lang":null,"contributors_enabled":false,"is_translator":false,"profile_background_color":"F5F8FA","profile_background_image_url":"","profile_background_image_url_https":"","profile_background_tile":false,"profile_link_color":"1DA1F2","profile_sidebar_border_color":"C0DEED","profile_sidebar_fill_color":"DDEEF6","profile_text_color":"333333","profile_use_background_image":true,"profile_image_url":"http:\/\/pbs.twimg.com\/profile_images\/1334766777419493377\/wSBvPAD3_normal.png","profile_image_url_https":"https:\/\/pbs.twimg.com\/profile_images\/1334766777419493377\/wSBvPAD3_normal.png","profile_banner_url":"https:\/\/pbs.twimg.com\/profile_banners\/1305687744929099776\/1606087005","default_profile":true,"default_profile_image":false,"following":null,"follow_request_sent":null,"notifications":null},"geo":null,"coordinates":null,"place":null,"contributors":null,"is_quote_status":false,"extended_tweet":{"full_text":"\ud83e\udd73\ud83c\udf8a New Years Giveaway! \ud83c\udf8a\ud83e\udd73\n\nI\u2019m giving 5 lucky people $100 each in #Bitcoin \n\nRules:\n\u2705 Tag 3 people\n\u2705 MUST Follow @mistcop\n\u2705 Like and Retweet this.\n\nWinners will be chosen and announced on Jan. 1, 2021","display_text_range":[0,200],"entities":{"hashtags":[{"text":"Bitcoin","indices":[66,74]}],"urls":[],"user_mentions":[{"screen_name":"mistcop","name":"Mistcop","id":1305687744929099776,"id_str":"1305687744929099776","indices":[113,121]}],"symbols":[]}},"quote_count":1,"reply_count":361,"retweet_count":706,"favorite_count":708,"entities":{"hashtags":[{"text":"Bitcoin","indices":[66,74]}],"urls":[{"url":"https:\/\/t.co\/w5X27ezJn5","expanded_url":"https:\/\/twitter.com\/i\/web\/status\/1344116778750902273","display_url":"twitter.com\/i\/web\/status\/1\u2026","indices":[114,137]}],"user_mentions":[],"symbols":[]},"favorited":false,"retweeted":false,"filter_level":"low","lang":"en"},"quoted_status_permalink":{"url":"https:\/\/t.co\/VKls9TjVB7","expanded":"https:\/\/twitter.com\/mistcop\/status\/1344116778750902273","display":"twitter.com\/mistcop\/status\u2026"},"is_quote_status":true,"extended_tweet":{"full_text":"FAST GIVEAWAY 60MENIT! \ud83d\ude3b\n\n250k untuk 1 orang yang sudah follow aku dan;\n\n@mistcop \n*wajib RT+Like tweet yang aku kutip dibawah ini.\n\nJika sudah RT+Like tweet ini. Buruan cepetan ikutan \u2728\u2728","display_text_range":[0,187],"entities":{"hashtags":[],"urls":[],"user_mentions":[{"screen_name":"mistcop","name":"Mistcop","id":1305687744929099776,"id_str":"1305687744929099776","indices":[73,81]}],"symbols":[]}},"quote_count":0,"reply_count":153,"retweet_count":373,"favorite_count":360,"entities":{"hashtags":[],"urls":[{"url":"https:\/\/t.co\/uovipumrxs","expanded_url":"https:\/\/twitter.com\/i\/web\/status\/1344121341444644864","display_url":"twitter.com\/i\/web\/status\/1\u2026","indices":[117,140]}],"user_mentions":[{"screen_name":"mistcop","name":"Mistcop","id":1305687744929099776,"id_str":"1305687744929099776","indices":[73,81]}],"symbols":[]},"favorited":false,"retweeted":false,"filter_level":"low","lang":"in"},"quoted_status_id":1344116778750902273,"quoted_status_id_str":"1344116778750902273","quoted_status":{"created_at":"Wed Dec 30 03:03:07 +0000 2020","id":1344116778750902273,"id_str":"1344116778750902273","text":"\ud83e\udd73\ud83c\udf8a New Years Giveaway! \ud83c\udf8a\ud83e\udd73\n\nI\u2019m giving 5 lucky people $100 each in #Bitcoin \n\nRules:\n\u2705 Tag 3 people\n\u2705 MUST Follow\u2026 https:\/\/t.co\/w5X27ezJn5","source":"\u003ca href=\"http:\/\/twitter.com\/download\/iphone\" rel=\"nofollow\"\u003eTwitter for iPhone\u003c\/a\u003e","truncated":true,"in_reply_to_status_id":null,"in_reply_to_status_id_str":null,"in_reply_to_user_id":null,"in_reply_to_user_id_str":null,"in_reply_to_screen_name":null,"user":{"id":1305687744929099776,"id_str":"1305687744929099776","name":"Mistcop","screen_name":"mistcop","location":"Playstation 5 & Blockchain","url":"https:\/\/www.buymeacoffee.com\/mistcop","description":"Streamer and Youtuber | #PS5 Gamer #Bitcoin and #ETH Enthusiast. | Youtube: https:\/\/t.co\/76i9IlYrKx Twitch: https:\/\/t.co\/vNa0JLjKee | Business: mistcop@protonmail.com","translator_type":"none","protected":false,"verified":true,"followers_count":43716,"friends_count":317,"listed_count":8,"favourites_count":179,"statuses_count":903,"created_at":"Tue Sep 15 02:00:03 +0000 2020","utc_offset":null,"time_zone":null,"geo_enabled":false,"lang":null,"contributors_enabled":false,"is_translator":false,"profile_background_color":"F5F8FA","profile_background_image_url":"","profile_background_image_url_https":"","profile_background_tile":false,"profile_link_color":"1DA1F2","profile_sidebar_border_color":"C0DEED","profile_sidebar_fill_color":"DDEEF6","profile_text_color":"333333","profile_use_background_image":true,"profile_image_url":"http:\/\/pbs.twimg.com\/profile_images\/1334766777419493377\/wSBvPAD3_normal.png","profile_image_url_https":"https:\/\/pbs.twimg.com\/profile_images\/1334766777419493377\/wSBvPAD3_normal.png","profile_banner_url":"https:\/\/pbs.twimg.com\/profile_banners\/1305687744929099776\/1606087005","default_profile":true,"default_profile_image":false,"following":null,"follow_request_sent":null,"notifications":null},"geo":null,"coordinates":null,"place":null,"contributors":null,"is_quote_status":false,"extended_tweet":{"full_text":"\ud83e\udd73\ud83c\udf8a New Years Giveaway! \ud83c\udf8a\ud83e\udd73\n\nI\u2019m giving 5 lucky people $100 each in #Bitcoin \n\nRules:\n\u2705 Tag 3 people\n\u2705 MUST Follow @mistcop\n\u2705 Like and Retweet this.\n\nWinners will be chosen and announced on Jan. 1, 2021","display_text_range":[0,200],"entities":{"hashtags":[{"text":"Bitcoin","indices":[66,74]}],"urls":[],"user_mentions":[{"screen_name":"mistcop","name":"Mistcop","id":1305687744929099776,"id_str":"1305687744929099776","indices":[113,121]}],"symbols":[]}},"quote_count":1,"reply_count":361,"retweet_count":706,"favorite_count":708,"entities":{"hashtags":[{"text":"Bitcoin","indices":[66,74]}],"urls":[{"url":"https:\/\/t.co\/w5X27ezJn5","expanded_url":"https:\/\/twitter.com\/i\/web\/status\/1344116778750902273","display_url":"twitter.com\/i\/web\/status\/1\u2026","indices":[114,137]}],"user_mentions":[],"symbols":[]},"favorited":false,"retweeted":false,"filter_level":"low","lang":"en"},"quoted_status_permalink":{"url":"https:\/\/t.co\/VKls9TjVB7","expanded":"https:\/\/twitter.com\/mistcop\/status\/1344116778750902273","display":"twitter.com\/mistcop\/status\u2026"},"is_quote_status":true,"quote_count":0,"reply_count":0,"retweet_count":0,"favorite_count":0,"entities":{"hashtags":[],"urls":[],"user_mentions":[{"screen_name":"Naunaback","name":"Nauna","id":1307946297060519936,"id_str":"1307946297060519936","indices":[3,13]},{"screen_name":"mistcop","name":"Mistcop","id":1305687744929099776,"id_str":"1305687744929099776","indices":[88,96]}],"symbols":[]},"favorited":false,"retweeted":false,"filter_level":"low","lang":"in","timestamp_ms":"1609298620069"}
+
+
+- Now, create Kafka topic "twitter_tweets"
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --create --topic twitter_tweets --partitions 6 --replication-factor 1
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic twitter_tweets.
+
+- Open a CMD amd start a Kafka console consumer without any consumer group
+kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic twitter_tweets
+
+- run the TwitterProducer and we will see the msg with "bitcoin" terms are getting read by the teitter client and produced to our kafka topic which is instantaniosly consumed by the kafka-console-consumer.
+
+- just to verify whether any real time tweets gets processed or not, add the twitter terms as "kafka" in TwitterProducer.class and start the programe.
+
+- go to twitter and login with your account, add a tweets like: "@SandipP97378066 Kafka is Cool !!!", and "Kafka is Awesome !!!"
+
+- look at the logs of tweeter clients and the same would get published to Kafka hence visible in console-consumer.
+
+- Twitter client logs:
+
+[main] INFO kafka.tutorial2.TwitterProducer - Twitter tweets: {"created_at":"Wed Dec 30 03:44:54 +0000 2020","id":1344127294445522944,"id_str":"1344127294445522944","text":"Kafka is Awesome !!!","source":"\ ......................
+
+- kafka-console-consumer messages:
+
+{"created_at":"Wed Dec 30 03:49:59 +0000 2020","id":1344128574916182016,"id_str":"1344128574916182016","text":"Kafka is Awesome !!!","source":"\u003ca href=\"https:\/\/mobile.twitter.com\" rel=\"nofollow\"\u003eTwitter Web App\u003c\/a\u003e","truncated":false,"in_reply_to_status_id":null,"in_reply_to_status_id_str":null,"in_reply_to_user_id":null,"in_reply_to_user_id_str":null,"in_reply_to_screen_name":null,"user":{"id":1301677463886393345,"id_str":"1301677463886393345","name":"Sandip Paul","screen_name":"SandipP97378066","location":null,"url":null,"description":"Technology enthusiast","translator_type":"none","protected":false,"verified":false,"followers_count":0,"friends_count":0,"listed_count":0,"favourites_count":0,"statuses_count":2,"created_at":"Fri Sep 04 00:25:00 +0000 2020","utc_offset":null,"time_zone":null,"geo_enabled":false,"lang":null,"contributors_enabled":false,"is_translator":false,"profile_background_color":"F5F8FA","profile_background_image_url":"","profile_background_image_url_https":"","profile_background_tile":false,"profile_link_color":"1DA1F2","profile_sidebar_border_color":"C0DEED","profile_sidebar_fill_color":"DDEEF6","profile_text_color":"333333","profile_use_background_image":true,"profile_image_url":"http:\/\/abs.twimg.com\/sticky\/default_profile_images\/default_profile_normal.png","profile_image_url_https":"https:\/\/abs.twimg.com\/sticky\/default_profile_images\/default_profile_normal.png","default_profile":true,"default_profile_image":false,"following":null,"follow_request_sent":null,"notifications":null},"geo":null,"coordinates":null,"place":null,"contributors":null,"is_quote_status":false,"quote_count":0,"reply_count":0,"retweet_count":0,"favorite_count":0,"entities":{"hashtags":[],"urls":[],"user_mentions":[],"symbols":[]},"favorited":false,"retweeted":false,"filter_level":"low","lang":"in","timestamp_ms":"1609300199618"}
+
+
+Producer Configurations
+=========================================================================================
+- while running any Kafka Producer, it shows all the configs:
+- like few example as below:
+acks = all
+bootstrap.servers = [127.0.0.1:9092]
+key.serializer = class org.apache.kafka.common.serialization.StringSerializer
+value.serializer = class org.apache.kafka.common.serialization.StringSerializer
+etc.
+
+
+[main] INFO org.apache.kafka.clients.producer.ProducerConfig - ProducerConfig values:
+	acks = all
+	batch.size = 32768
+	bootstrap.servers = [127.0.0.1:9092]
+	buffer.memory = 33554432
+	client.id =
+	compression.type = snappy
+	connections.max.idle.ms = 540000
+	enable.idempotence = true
+	interceptor.classes = []
+	key.serializer = class org.apache.kafka.common.serialization.StringSerializer
+	linger.ms = 20
+	max.block.ms = 60000
+	max.in.flight.requests.per.connection = 5
+	max.request.size = 1048576
+	metadata.max.age.ms = 300000
+	metric.reporters = []
+	metrics.num.samples = 2
+	metrics.recording.level = INFO
+	metrics.sample.window.ms = 30000
+	partitioner.class = class org.apache.kafka.clients.producer.internals.DefaultPartitioner
+	receive.buffer.bytes = 32768
+	reconnect.backoff.max.ms = 1000
+	reconnect.backoff.ms = 50
+	request.timeout.ms = 30000
+	retries = 2147483647
+	retry.backoff.ms = 100
+	sasl.client.callback.handler.class = null
+	sasl.jaas.config = null
+	sasl.kerberos.kinit.cmd = /usr/bin/kinit
+	sasl.kerberos.min.time.before.relogin = 60000
+	sasl.kerberos.service.name = null
+	sasl.kerberos.ticket.renew.jitter = 0.05
+	sasl.kerberos.ticket.renew.window.factor = 0.8
+	sasl.login.callback.handler.class = null
+	sasl.login.class = null
+	sasl.login.refresh.buffer.seconds = 300
+	sasl.login.refresh.min.period.seconds = 60
+	sasl.login.refresh.window.factor = 0.8
+	sasl.login.refresh.window.jitter = 0.05
+	sasl.mechanism = GSSAPI
+	security.protocol = PLAINTEXT
+	send.buffer.bytes = 131072
+	ssl.cipher.suites = null
+	ssl.enabled.protocols = [TLSv1.2, TLSv1.1, TLSv1]
+	ssl.endpoint.identification.algorithm = https
+	ssl.key.password = null
+	ssl.keymanager.algorithm = SunX509
+	ssl.keystore.location = null
+	ssl.keystore.password = null
+	ssl.keystore.type = JKS
+	ssl.protocol = TLS
+	ssl.provider = null
+	ssl.secure.random.implementation = null
+	ssl.trustmanager.algorithm = PKIX
+	ssl.truststore.location = null
+	ssl.truststore.password = null
+	ssl.truststore.type = JKS
+	transaction.timeout.ms = 60000
+	transactional.id = null
+	value.serializer = class org.apache.kafka.common.serialization.StringSerializer
+
+
+Acks & min.insync.replicas
+---------------------------------------------------------------------------------------
+acks = 0 (no acks)
+
+- No resposne is requested.
+- If the broker goes offline or an exception happens, we wont know and will lose data.
+- Useful for data where its okay to potentially lose messages:
+	- Metrics collection.
+	- Log collection
+
+acks = 1 (default)
+
+- by default producer acks = 1 i.e. leader broker ack is must.
+- leader broker response is requested, but replication is not a gurantee (happens in the background)
+- if an ack is not received, the producer may retry.
+- If the leader broker goes offline, but replicas have not replicated the data yet, we will have a data loss.
+
+
+acks = all (replicas acks is must)
+- leader + replica ack requested.
+	- 1. producer send data to leader.
+	- 2. send to all replicas
+	- 3. replicas send back the acknoledgement of successful write back to the leader
+	- 4. response send back to the producer client.
+	- 5. added latency but more safety with no data loss.
+- acks=all must be used with min.insync.replicas settings.
+- min.insync.replicas can be set both at broker or at topic level. basically can override at topic level.
+- min.insync.replicas=2 means that at least 2 brokers that are ISR (incl. leader) must respond that they have the data, otherwise, producer will get an error.
+- that means with replication.factor=3, min.insync.replicas=2 and acks=all, we can only tolerate 1 broker going down, otherwise the producer will receive an exception on send. this is the strongest guarantee, 2 replicas (including leader) will have the data otherwise the producer will not receive an ack
+
+example:
+- replication.factor=3, min.insync.replicas=2 and acks=all
+- lets say we have 3 brokers having the leader and its ISR partitions i.e.
+partition-0 - leader - (broker 101),
+partition-0 - ISR - (broker 102)
+partition-0 - ISR - (broker 103)
+
+- partition-0 - ISR - (broker 102)  and partition-0 - ISR - (broker 103) went down.
+
+- Now, with min.insync.replicas=2, Kafka now can only send success if it can get success ask from 2 of its broker for the same partition (1 ISR and 1 leader), hence at this time, since there are only only 1 broker (leader) currently LIVE, kafka will send back Exception (NOT_ENOUGH_REPLICAS)
+
+
+
+Retries, delivery.timeout.ms & max.in.flight.requests.per.connection
+---------------------------------------------------------------------------------------
+- In case of transient failures, developers are expected to handle excpetion/re-process the send/reecieve, otherwise the data will be lost.
+- Example of transient Failures:
+	- NotEnoughReplicasException i.e. when acks=all and there are not enough replicas available for sync/ack of the new msg write. In this the producer should retry.
+- There is a "retries" setting
+	- default to 0 for kafka <= 2.0 i.e. the producer will not perform any retries for the Kafka version less than 2.0
+	- defaults to 2147483647 (i.e. Integer.MAX_INT) for Kafka >= 2.1
+
+- The interval of retries is managed by the setting: retry.backoff.ms (default 100 ms)
+- Even tough the default no. of retries is very high i.e. 2147483647 (i.e. Integer.MAX_INT), Kafka producer won't retru the request for ever as its bounded by a timeout setting (delivery.timeout.ms defult to 120,000 ms i.e. 120 sec i.e. 2 min), producer will retry upto 2 mins and after which if it still fail, producer will receive a TimeoutException which needs to be handled by the developer.
+- Records will be failed if they can't be acknowledged within delivery.timeout.ms
+
+Producer retries: WARNINGS
+---------------------------------------------------------------------------------------
+- In case of retries, there is a chance that the messages will be sent out of order (if a batch has failed to be sent)
+- If we rely on key-based ordering, that can be a really big issue. because the messages with same key will still go to the same partition but due to retries, the messages will become out of order within a specific partition because, when the producer send the data to Kafka, it send them in parallel to achieve higher throughput. (max.in.flight.requests.per.connection default to 5), if this setting is set to higher no. then there is a chance of getting the messages out of order due to retries.
+	- set this value to 1 if we want to ensure the ordering which will have impact on throughput.
+
+- BUT, we can see there is lot of config to manage all above mentioned usecases.
+	- In kafka >= 1.0.0, there is a better solution with Idempotent Producers. but in case we are not using idempotent producers, we need to use these above setting carefully.
+
+
+Idempotent Producer
+---------------------------------------------------------------------------------------
+- Here is the problem: The producer can introduce duplicate messages in Kafka due to network errors.
+
+example of good request:
+	- Producer send data o Kafka.
+	- Kafka commits.
+	- Kafka sends back ack.
+
+example of bad request:
+	- Producer send data o Kafka.
+	- Kafka commits.
+	- but the acks never reaches to producer client due to netwrok error.
+	- producer retry (since retries config is > 0)
+	- Kafka commits again (duplicate)
+	- Kafka sends back ack.
+- here from producer side, it only send the data once but from kafka perspective, it get the data twice and commits data twice which creates duplicates.
+
+- Idempotent Producer solve this if we have Kafka >= 0.11, we can configure the producer to be Idempotent.
+
+
+example of idempotent request:
+	- Producer send data o Kafka.
+	- Kafka commits.
+	- but the acks never reaches to producer client due to netwrok error.
+	- producer retry (since retries config is > 0) with produce request ID.
+	- Using the produce request ID, Kafka detect this is a duplicate request and does not commit again (duplicate), instead just send back the ack. Kafka internally manage the de-duplication and handle the situation by its own.
+	- Kafka sends back ack.
+
+- Idempotent Producer are great to guarantee a stable and safe pipeline.
+- it comes with auto settings:
+	- retries = Integer.MAX_VALUE (2^31-1 i.e. 2147483647)
+	- max.in.flight.requests.per.connection = 1 (kafka == 0.11) or
+	- max.in.flight.requests.per.connection = 5 (kafka >= 1.0 - higher performance and also ordering is maintained even if theer are retries)
+	- more details can be found with diagrams in jira KAFKA-5494 (how things work to keep ordering while managing to work with 5 in flight request.)
+	- acks=all
+	- these settings are applies automatically after your producer started with "enable.idempotence" = true in producer configs.
+
+
+Safe Producer Summary
+---------------------------------------------------------------------------------------
+Kafka < 0.11
+- acks=all (producer level)
+	- ensures data is properly replicated before an ask is received.
+- min.insync.replicas=2 (broker/topic level settings)
+	- Ensures 2 brokers in ISR at least have the data after an ack.
+- retries=MAX_INT (producer level)
+	- ensures transient errors are retries till timeout ms (~ 2 mins)
+- max.in.flight.requests.per.connection=1 (producer level)
+	- if we want to have strict ordering, set this prop to 1 at producer level. or if we dont care the ordering we can keep it to default i.e. 5
+- these above setting are little complicated.
+
+Kafka > 0.11
+- enable.idempotence=true (producer level) + min.insync.replicas=2 (broker/topic level settings)
+	- all these above 2 settings will imply: acks=all, retries=MAX_INT, max.in.flight.requests.per.connection=1 if Kafka 0.11 or 5 if Kafka >= 1.0
+- ordering of messages is guranteed with improved performance.
+
+- Running a "safe producer" might impact throughput and latency, always test your usecase before going to production.
+
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-producer-twitter/src/main/java/kafka/tutorial2/TwitterProducer.java
+- look at the section with below configs:
+
+// create safe Producer
+properties.setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
+properties.setProperty(ProducerConfig.ACKS_CONFIG, "all");
+properties.setProperty(ProducerConfig.RETRIES_CONFIG, Integer.toString(Integer.MAX_VALUE));
+properties.setProperty(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "5"); // kafka 2.0 >= 1.1 so we can keep this as 5. Use 1 otherwise.
+
+- Run TwitterProducer.java
+
+[main] INFO org.apache.kafka.clients.producer.ProducerConfig - ProducerConfig values:
+	acks = all
+	batch.size = 32768
+	bootstrap.servers = [127.0.0.1:9092]
+	buffer.memory = 33554432
+	client.id =
+	compression.type = snappy
+	connections.max.idle.ms = 540000
+	enable.idempotence = true
+	interceptor.classes = []
+	key.serializer = class org.apache.kafka.common.serialization.StringSerializer
+	linger.ms = 20
+	max.block.ms = 60000
+	max.in.flight.requests.per.connection = 5
+	max.request.size = 1048576
+	metadata.max.age.ms = 300000
+	metric.reporters = []
+	metrics.num.samples = 2
+	metrics.recording.level = INFO
+	metrics.sample.window.ms = 30000
+	partitioner.class = class org.apache.kafka.clients.producer.internals.DefaultPartitioner
+	receive.buffer.bytes = 32768
+	reconnect.backoff.max.ms = 1000
+	reconnect.backoff.ms = 50
+	request.timeout.ms = 30000
+	retries = 2147483647
+	retry.backoff.ms = 100
+	sasl.client.callback.handler.class = null
+	sasl.jaas.config = null
+	sasl.kerberos.kinit.cmd = /usr/bin/kinit
+	sasl.kerberos.min.time.before.relogin = 60000
+	sasl.kerberos.service.name = null
+	sasl.kerberos.ticket.renew.jitter = 0.05
+	sasl.kerberos.ticket.renew.window.factor = 0.8
+	sasl.login.callback.handler.class = null
+	sasl.login.class = null
+	sasl.login.refresh.buffer.seconds = 300
+	sasl.login.refresh.min.period.seconds = 60
+	sasl.login.refresh.window.factor = 0.8
+	sasl.login.refresh.window.jitter = 0.05
+	sasl.mechanism = GSSAPI
+	security.protocol = PLAINTEXT
+	send.buffer.bytes = 131072
+	ssl.cipher.suites = null
+	ssl.enabled.protocols = [TLSv1.2, TLSv1.1, TLSv1]
+	ssl.endpoint.identification.algorithm = https
+	ssl.key.password = null
+	ssl.keymanager.algorithm = SunX509
+	ssl.keystore.location = null
+	ssl.keystore.password = null
+	ssl.keystore.type = JKS
+	ssl.protocol = TLS
+	ssl.provider = null
+	ssl.secure.random.implementation = null
+	ssl.trustmanager.algorithm = PKIX
+	ssl.truststore.location = null
+	ssl.truststore.password = null
+	ssl.truststore.type = JKS
+	transaction.timeout.ms = 60000
+	transactional.id = null
+	value.serializer = class org.apache.kafka.common.serialization.StringSerializer
+
+
+- acks = all
+- retries = 2147483647
+- enable.idempotence = true
+- max.in.flight.requests.per.connection = 5
+
+
+Producer Message Compression
+---------------------------------------------------------------------------------------
+- Producer usually send data that is text-based, for example with JSON data.
+- in this is very impotant to apply compression at the producer level.
+- Compression is enabled at the Producer level and does not require any configuration change in the Broker or in the Consumers.
+	- "compression.type" can be none (default) / gzip / lz4 / snappy.
+- compression is more effective the bigger the batch of message being sent to Kafka. for benchmarks: https://blog.cloudflare.com/squeezing-the-firehose/
+
+- Producer batch is basically Kafka batches the messages on its owne and send to Kafka, since the producer can produce lot of messages and it would try to send as mush msg as possible in one go to improve the throughput.
+
+- compressing messages have other benefits as weel like replicating the same would be much lighter, will use less network bandwidth.
+- advantages:
+	- Smaller producer request size (compressed ratio can go upto 4X!)
+	- faster to transfer data over network.
+	- better throughput.
+	- better disk utilization (stored messages ar mush smaller)
+- disadvantages (minor):
+	- Producers must commit some CPU cycles to compression.
+	- similarly Consumers must spent some CPU cycle to de-compress.
+
+- test using snappy or lz4 for optimal speed and compression ratio. gzip has highest compression ratio but it is not very fast.
+- always use compression in prduction and especially if we have high throughput.
+- consider tweaking "linger.ms" and "batch.size" to have bigger batches and therefore more compression and higher throughput.
+
+
+Producer Batching "linger.ms" and "batch.size"
+---------------------------------------------------------------------------------------
+- By default, Kafka tries to minimize latency so it tries to send records as soon as possible.
+- when the producer batches the messages, it just one request to kafka.
+- batching can be controlled using the below 2 settings:
+- "linger.ms" => No. of milliseconds a producer is willing to wait before sending a batch (default 0)
+	- by introducing little bit of lag (5-10 ms i.e. linger.ms=5), we increase the chance of more messages getting batched together.
+- So producer creates messages using the .send() but internally it will wait until: "linger.ms" and then create batches with the available no, of messages ready to be send.
+
+- "batch.size" => max size of bytes that can be included in a batch. default: 16 KB
+	- increasing the size to 32KB or 64 KB, can help increasing the compression, throughput and efficinecy of requests.
+
+- we can monitor the avg. batch size metric using Kafka Producer Metrics.
+
+
+High throughput Producer settings
+---------------------------------------------------------------------------------------
+- snappy message compression. snappuy is good if the msg is text based ex: log lines or JSON. good balance of CPU and compression ration. made by Google.
+- "batch.size"=32KB and "linger.ms"=20ms
+
+// high throughput producer (at the expense of a bit of latency and CPU usage)
+properties.setProperty(ProducerConfig.COMPRESSION_TYPE_CONFIG, "snappy");
+properties.setProperty(ProducerConfig.LINGER_MS_CONFIG, "20");
+properties.setProperty(ProducerConfig.BATCH_SIZE_CONFIG, Integer.toString(32*1024)); // 32 KB batch size
+
+- add few more twitter terms to get more messages.
+List<String> terms = Lists.newArrayList("bitcoin", "usa", "politics", "sport", "soccer");
+
+- run the https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-producer-twitter/src/main/java/kafka/tutorial2/TwitterProducer.java
+
+- we would see lot of messages are now comming in and look at the Kafka-console-consumer which is also started receiving lot more messages now.
+
+
+Producer Default partitioner and How keys are hashed.
+---------------------------------------------------------------------------------------
+- basically the message keys are first converted into bytes using a serializer.
+- now these byte keys are now hashed using some big mathematical formulla (murmur2 algorithm) to transform all these bytes into a final value.
+- Kafka uses murmur2 which is very good algo for hashing which distribute the keys evenly acorss all of its available brokers.
+- possible to override the default partitioner ("partitioner.class" setting) but very rarely done.
+
+murmur2 formulla:
+targetPartition = Utils.abs(Utils.murmur2(ecord.key())) % numPartitions
+
+- This ensures the messages with same key will go to the same partition and adding more partition after the topic is created will completely alter the formulla and hence messages with same key may got to different partion going forward.
+
+
+max.block.ms and buffer.memory
+---------------------------------------------------------------------------------------
+- If the producer produces faster than the broker can take, the records will be buffered in memory.
+- by default the size of send buffer is buffer.memory=33554431 (32 MB)
+- if this buffer is full (all 32 MB), then the .send() method will start to block (won't return right away)
+
+- max.block.ms=60000 (i.e. 60 sec); the time the .send() will block until throwing an exception. Exception are basically thrown when:
+	- The producer has filled up its buffer.
+	- The broker is not accepting any data.
+	- max.block.ms=60000 . 60 sec has elapsed.
+
+- if we get this exception, that means brokers are down or overloaded as they can't respond to requests.
+
+
+Kafka ElasticSearch Consumer & Advanced Configurations
+=========================================================================================
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-consumer-elasticsearch/pom.xml
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-consumer-elasticsearch/src/main/java/com.github.simplesteph.kafka/tutorial3/ElasticSearchConsumer.java
+
+- Start ElasticSearch.
+- cd D:\work\learn\elastic-search\elasticsearch-7.8.0
+- bin\elasticsearch.bat
+- http://localhost:9200
+
+- Start Kibana
+- cd D:\work\learn\elastic-search\kibana-7.8.0
+- bin\kibana.bat
+- http://localhost:5601
+
+- create a new index: via kibana dev tools.
+- PUT /twitter
+{
+  "acknowledged" : true,
+  "shards_acknowledged" : true,
+  "index" : "twitter"
+}
+
+http://localhost:9200/twitter
+{
+	twitter: {
+		aliases: {},
+		mappings: {},
+		settings: {
+			index: {
+				creation_date: "1609341095874",
+				number_of_shards: "1",
+				number_of_replicas: "1",
+				uuid: "cxYNzTwpRu2VAzno2qJTXQ",
+				version: {
+					created: "7080099"
+				},
+				provided_name: "twitter",
+			}
+		},
+	}
+}
+
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic twitter_tweets --describe
+Topic: twitter_tweets   PartitionCount: 6       ReplicationFactor: 1    Configs: segment.bytes=1073741824
+        Topic: twitter_tweets   Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 2    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 3    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 4    Leader: 0       Replicas: 0     Isr: 0
+        Topic: twitter_tweets   Partition: 5    Leader: 0       Replicas: 0     Isr: 0
+
+
+- Run https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-consumer-elasticsearch/src/main/java/com.github.simplesteph.kafka/tutorial3/ElasticSearchConsumer.java
+
+- This will post the tweets JSON data into tweets index.
+
+http://localhost:9200/tweets/_search?q=*.*
+
+
+
+Delivery Semantics for Consumers
+-------------------------------------------------------------------------------------------------
+At Most Once
+----------------
+- Offsets are committed as soon as the mesage batch is received. If the processing goes worng, the message will be lost (it wont be read again).
+- Consumers read messages in batch, lets say the consumer read 5 messages in 1 batch and it immediately committed until that offset and now starts processing these 5 message and while processing 3rd msg, the consumer goes down, hence could not process the 3rd, 4th and 5th msgs.
+- when the consumer comes back online, it would start reading from next uncomitted offsets.
+
+At least once (default)
+-------------------------
+- default if we dont set anything in consumer config properties.
+- Offsets are committed after the message is processed, If the processing goes wrong, the message will be read again. This can result in duplicate  processing of messages. Hence developer need to make sure the process strategy is Idempotent (i.e. processing the same message again and gaing wont impact the system)
+
+- In the ElasticSearchConsumer code we mafe the process idempotent buy using the tweet Id as the doc Id of the JSON doc in ElasticSearch.
+
+String id = jsonParser.parse(tweetJson)
+                .getAsJsonObject()
+                .get("id_str")
+                .getAsString();
+
+IndexRequest indexRequest = new IndexRequest("tweets")
+                       .source(record.value(), XContentType.JSON)
+                       .id(id); // this is to make our consumer idempotent
+
+bulkRequest.add(indexRequest); // we add to our bulk request (takes no time)
+
+
+- Another option is to generate id using combination of record.topic(), record.partition() and record.offset()
+// kafka generic ID
+String id = record.topic() + "_" + record.partition() + "_" + record.offset();
+
+
+Exactly Once
+---------------
+- Can be achieved for Kafka => Kafka workflows using Kafka Streams API.
+
+
+Consumer Poll Behavior
+-------------------------------------------------------------------------------------------------
+- Kafka Consumers have a "poll" model, while many other messaging bus in enterprises have a  "push" model.
+- This allows consumers to control where in the log, they want to consume, how fast, and gives them the ability to replay events.
+
+	- Consumer does .poll(duration timeout)
+	- Broker returns data immediately if possible else return empty after "timeouts"
+
+- below config to control how the poll should behave.
+	- fetch.min.bytes (default 1)
+		- how much data we want to pull for each pull request.
+		- improve throughput and decrease no. of pull requests. ex: pull data unless the data is 100KB
+		- costs a bit of latency.
+	- max.poll.records (default 500)
+		- Controls how many messages to receive for each poll request.
+		- increase if your messages are very small and have a lot of available RAM.
+		- good to monitor how many records are polled per poll request.
+	- max.partition.fetch.bytes (default 1 MB)
+		- Max data returned by the broker per partition.
+		- If the consumer is reading from 100 partitions, the consumer client need a lot of memory.
+	- fetch.max.bytes (default 50 MB)
+		- Max data returned for each fetch request (covers multiple partitions)
+		- The consumer performs multiple fetches in parallel.
+
+- All these above setting are set to default, we change unless consumer maxes out on throughput already.
+
+
+Consumer Offsets Commits Strategy
+-------------------------------------------------------------------------------------------------
+- What happens when the consumer committs the offsets.
+- 2 most common pattern for committing offsets in a consumer application.
+- 2 Strategy:
+	- (easy): enable.auto.commit=true (which is the default) and synchronous processing of batches i.e. we dont poll again untill we completed the processing of the messages we just received.
+		while(true){
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100)); // new in Kafka 2.0.0
+			// doSomethingSynchronous (records)
+		}
+	- with auto-commit, offsets will be committed automatically for us at regular interval (auto.commit.intervals.ms=5000 by-default) everytime we call .poll()
+
+	- *** If we dont use synchronous processing i.e. something async manner, then without knowing we will be in "at-most-once" behavior because offsets will be committed before we complete processing of messages.
+
+	- Enabling auto-commit=rue is risky and best option is enable.auto.commit=false & synchronous processing of batches. here we control when we should commit the offsets and whats the condition for comitting them.
+	- example: accumulating records into a buffer and then flushing the buffer to a database +  then commit the offsets.
+
+	properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false"); // disable auto commit of offsets
+	properties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "100"); // to decrease the amount data the consumer receiving for each poll request i.e. we get max 100 message for each poll request.
+
+	while(true){
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100)); // new in Kafka 2.0.0
+			// doSomethingSynchronous (records)
+			consumer.commitSync()
+		}
+
+
+	- (medium): enable.auto.commit=false and manual commit of offsets i.e. explicitly disable the capability of commiting the offsets and manually commit the offsets.
+
+
+Consumer Offsets Reset Behavior
+-------------------------------------------------------------------------------------------------
+- A consumer is expected to read from a log continuously.
+- But if the consumer app has a bug, the consumer can be down.
+- If the Kafka has a retention of 7 days and consumer is down for more that 7 days due to bug fixes. The offsets will become "Invalid" hence the data will be lost.
+
+- How to deal with this?
+- The bahavior for the consumer is to then use:
+	- auto.offset.reset=latest : will read from the end of the log
+	- auto.offset.reset=earliest : will read from the start of log
+	- auto.offset.reset=none : will throw exception if no offset is found.
+- Additionally, sometime consumer offsets can be lost.
+	- If the consumer has not read the new data in 1 days (default) (Kafka < 2.0), which was very bad.
+	- If the consumer has not read the new data in 7 days (default) (Kafka >= 2.0)
+	- This can be controlled by the broker setting offset.retention.minutes to set very high enough ex: 1 month
+
+
+Replaying data for Consumers
+-------------------------------------------------------------------------------------------------
+- To replay data for a consumer group:
+	- Take all the consumers from a specific group down.
+	- Use "kafka-consumer-groups" command to set offset to what we want.
+	- Restart the consumers.
+
+- In our https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-consumer-elasticsearch/src/main/java/com.github.simplesteph.kafka/tutorial3/ElasticSearchConsumer.java
+
+- first check the current offset details.
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --describe --group kafka-demo-elasticsearch
+
+Consumer group 'kafka-demo-elasticsearch' has no active members.
+
+GROUP                    TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+kafka-demo-elasticsearch twitter_tweets  5          327             327             0              	-               -               -
+kafka-demo-elasticsearch twitter_tweets  4          328             328             0              	-               -               -
+kafka-demo-elasticsearch twitter_tweets  3          328             328             0              	-               -               -
+kafka-demo-elasticsearch twitter_tweets  2          328             328             0              	-               -               -
+kafka-demo-elasticsearch twitter_tweets  1          329             329             0              	-               -               -
+kafka-demo-elasticsearch twitter_tweets  0          326             326             0              	-               -               -
+
+- i.e. the consumer is catching the offsets at the rate the messaes are produced. Now to replay the offsets, first stop the consumer.
+
+- reset using command.
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --group kafka-demo-elasticsearch --reset-offsets --execute --to-earliest --topic twitter_tweets
+
+GROUP                          TOPIC                          PARTITION  NEW-OFFSET
+kafka-demo-elasticsearch       twitter_tweets                 3          0
+kafka-demo-elasticsearch       twitter_tweets                 0          0
+kafka-demo-elasticsearch       twitter_tweets                 4          0
+kafka-demo-elasticsearch       twitter_tweets                 5          0
+kafka-demo-elasticsearch       twitter_tweets                 2          0
+kafka-demo-elasticsearch       twitter_tweets                 1          0
+
+C:\Users\pauls>kafka-consumer-groups.bat --bootstrap-server localhost:9092 --describe --group kafka-demo-elasticsearch
+
+Consumer group 'kafka-demo-elasticsearch' has no active members.
+
+GROUP                    TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+kafka-demo-elasticsearch twitter_tweets  5          0               327             327             -               -               -
+kafka-demo-elasticsearch twitter_tweets  4          0               328             328             -               -               -
+kafka-demo-elasticsearch twitter_tweets  3          0               328             328             -               -               -
+kafka-demo-elasticsearch twitter_tweets  2          0               328             328             -               -               -
+kafka-demo-elasticsearch twitter_tweets  1          0               329             329             -               -               -
+kafka-demo-elasticsearch twitter_tweets  0          0               326             326             -               -               -
+
+- Restart the ElasticSearchConsumer, we now should be receiving the data from the very begining.
+
+
+Controlling Consumer Livelines
+-------------------------------------------------------------------------------------------------
+- Lets say we have a consumer group i.e. consumer-group-app which has 3 consumers in it. How the consumer group works and how the consumers co-ordinate amonth themselves.
+- basically each consumer is going to poll Kafka using the Poll Thread.
+- each consumer also going to talk to a consumer group co-ordinator for its group and send heartbeats (hearbeat Threads). and These 2 processes (Poll thread to broker and heartbeat to another broker) are separate. this allows the broker to check if the consumer are alive or not. if the consumers stops beating, Consumer group co-ordinator thinks that the consumer has gone down hence a rebalance is needed.
+- So avoid issues, consumers are encouraged to process data fast and poll often, otherwise there will be a lot of rebalances and rebalancing is a "stop-the-world" activity.
+
+Consumer heartbeat Thread
+-----------------------------------
+session.timeout.ms (default 10 sec)
+- heartbest are sent periodically to the broker.
+- if no heartbeats are sent during that period, the consumer is considered dead.
+
+heartbeat.interval.ms (default 3 sec)
+- how frequent consumer will send the heartbeat.
+- usually set to 1/3rd of session.timeout.ms
+
+
+Consumer poll Thread
+-----------------------------------
+max.poll.interval.ms (default 5 mins)
+- max amount of time between 2 poll calls before declaring the consumer dead.
+- This particularly relevant for big data processing like sparkin case the processing takes long time. i.e. if the processing takes more than 5 mins before we do another .poll request then Kafka will think the consumer app is hung-up and not working well hence it will kill the consumer and remove from its group. Hence we should set this setting to big enough. may be 10 mins.
+
+
+Kafka Connect & Kafka Streams
+=================================================================================================
+- 4 common Kafka usecases:
+	- Source => Kafka i.e. publishing data from any source to Kafka ex: twitter feeds etc. Producer APIs (Kafka Connect Source to be used)
+	- Kafka => Kafka i.e. one Kafka to another Kafka. Consumer/Producer APIs. Mainly used to transform the raw data and put them again into Kafka (Kafka Streams to be used)
+	- Kafka => Sink i.e. consuming Kafka data into a consumer client ex: consuming twitter feeds from Kafka and load into ElasticSearch. Cosumer APIs (Kafka Connect Sink to be used)
+	- Kafka => App i.e. similar to Kafka => Sink
+
+- Simplify and improve getting data in and out of Kafka.
+- Simplify transforming data within Kafka without relying on external libs.
+
+Why Kafka Connect?
+---------------------------
+- Programmers always want to import data from same sources: ex: Database, JDBC connection, SAP HANA, Blockchain, Cassandra, DynamoDB, FTP, IOT, MongoDB, SQS, Salesforce, Twitter etc.
+- also programmers want to store data after consuming into same sinks: ex: S3, ElasticSearch, HDFS, JDBC, SAP HANA, DocumentDB, Cassandra, DynamoDB, MongoDB, Hbase, Redis, Splunk, Twitter etc.
+- if we need to prgramme these connecting sources and consuming at sinks, the system needs to robust enough to achieve Fault tolerance, Idempotence, Distribution, Ordering etc.
+- Other programmers have already done this and open sourced as Kafka Connect.
+
+Kafka Connect & Streams Architecture Design
+--------------------------------------------------
+- Kafka Cluster made of multiple brokers (broker-1, broker-2, broker-3, broker-4 etc)
+- Kafka Connect cluster made of workers (worker-1, worker-2, worker-3, worker-4 etc)
+- Now variours Source system can be connected to Kafka Connect cluster and therefore the source data will be pumped into Kafka Connect.
+- Kafka Connect then now push the data into Kafka brokers cluster.
+- Kafka Streams Apps then can connect to "Kafka brokers cluster" and transform the data if needed and push them back to "Kafka brokers cluster" may be to a different topic.
+- "Kafka Connect" can now pull the same data from "Kafka brokers cluster" and can be consumed at Sinks.
+
+Sources			==>			Kafka Connect Cluster		==> 		Kafka Broker cluster		==> 		Kafka Streams API
+Sinks			<==			Kafka Connect Cluster		<== 		Kafka Broker cluster		<== 		Kafka Streams API
+
+- Source connectors to get data from Common Data Sources.
+- Sink Connectors to publish that data in common data stores.
+- easy to quickly get the data into Kafka.
+- part of ETL pipeline.
+- scale from small pipeline to large.
+
+
+Kafka Connect Confluent (connect-standalone.bat)
+--------------------------------------------------
+Standalone and Distributed Mode Overview
+To review, Kafka connectors, whether sources or sinks, run as their own JVM processes called “workers”.  As mentioned, there are two ways workers may be configured to run: Standalone and Distributed.
+
+- Running Kafka Connect in Standalone makes things really easy to get started.
+
+C:\Users\pauls>cd D:\work\learn\kafka\kafka_2.12-2.6.0\bin\windows
+C:\Users\pauls>connect-standalone.bat
+USAGE: connect-standalone.bat connect-standalone.properties
+
+- Confluent creator of Apache Kafka, accumulated all the available connectors at their page.
+- List of connectors: https://www.confluent.io/product/connectors/
+
+- twitter connector:
+- https://www.confluent.io/hub/jcustenborder/kafka-connect-twitter
+- https://github.com/jcustenborder/kafka-connect-twitter
+
+TwitterSourceConnector
+This Twitter Source connector is used to pull data from Twitter in realtime.
+
+- configs are (as explained in https://github.com/jcustenborder/kafka-connect-twitter)
+
+name=TwitterSourceDemo
+tasks.max=1
+connector.class=com.github.jcustenborder.kafka.connect.twitter.TwitterSourceConnector
+
+# Set these required values
+process.deletes=false
+filter.keywords=bitcoin
+kafka.status.topic=twitter_status_connect
+kafka.delete.topic=twitter_deletes_connect
+# put your own credentials here - don't share with anyone
+# API key
+twitter.oauth.consumerKey=
+# API secret key
+twitter.oauth.consumerSecret=
+# Access token
+twitter.oauth.accessToken=
+# Access token secret
+twitter.oauth.accessTokenSecret=
+
+
+- create folders like below. in the same codebase:
+- kafka-connect
+	- kafka-connect-twitter
+	- download the zip from https://www.confluent.io/hub/jcustenborder/kafka-connect-twitter. copy all the jars from lib directory.
+
+- to run connectors we need the command script and the config (both are profided by vanila Kafka.)
+- runner command can be found in bin. and config under conffig.
+- D:\work\learn\kafka\kafka_2.12-2.6.0\bin\windows\connect-standalone.bat
+- D:\work\learn\kafka\kafka_2.12-2.6.0\config\connect-standalone.properties
+
+- copy the connect-standalone.properties inside "kafka-connect" folder and edit 1 filed. i.e.
+plugin.path=connectors
+
+- create 2 topic for these:
+kafka.status.topic=twitter_status_connect
+kafka.delete.topic=twitter_deletes_connect
+
+D:\work\intellij-workspace\kafka-beginners-practice\kafka-connect>kafka-topics.bat --bootstrap-server localhost:9092 --create --topic twitter_status_connect --partitions 3 --replication-factor 1
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic twitter_status_connect.
+
+D:\work\intellij-workspace\kafka-beginners-practice\kafka-connect>kafka-topics.bat --bootstrap-server localhost:9092 --create --topic twitter_deletes_connect --partitions 3 --replication-factor 1
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic twitter_deletes_connect.
+
+D:\work\intellij-workspace\kafka-beginners-practice\kafka-connect>kafka-topics.bat --bootstrap-server localhost:9092 --list
+__consumer_offsets
+first_topic
+new_topic
+second_topic
+twitter_deletes_connect
+twitter_status_connect
+twitter_tweets
+
+
+- Now open a new cmd and start a kafka-console-consumer.
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic twitter_status_connect --from-beginning
+
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-connect/run.sh
+
+cd D:\work\intellij-workspace\kafka-beginners-practice\kafka-connect
+D:\work\intellij-workspace\kafka-beginners-practice\kafka-connect>connect-standalone.bat connect-standalone.properties twitter.properties
+
+- the connector job will start (few warn errors) in standalone mode and also start seeing the messgages coming in kafka-console-consumer
+
+- CTRL+c and Terminate batch job (Y/N)? y to terminate the job.
+
+
+Kafka Streams Intro
+--------------------------------------------------------------------------------
+- we want to do following from the twitter_tweets topic:
+	- Filter only tweets that have over 10 likes or replies.
+	- Count the number of tweets received for each hashtag every 1 min.
+- with Kafka consumer and Producer APIs, we can do it but its very low level.
+
+What is Kafka Streams?
+--------------------------
+- Its the java libs for easy data processing and transformation within Kafka.
+- we have kafka topic and data are coming in but lets say we want to some data transformation, data enrichment, fraud detection, Monitoring/alerting etc.
+- standard jaba application.
+- no need to create a separate cluster.
+- highly scalable, elastic, fault tolerant.
+- Exactly once capability.
+- one record at a time processing  henec no batching / micro batching like spark streams etc.
+- works for any application size.
+- Kafka Streams can take data from one/multiple topic, transform and put it back to one/multiple topic.
+- Its a serious contender to other processing frameworks such as Apache Spark, Flink or NiFi.
+
+Example of twitter filterring:
+- we want to filter a tweets topic and put the results batck to Kafka.
+- chain a consumer with a producer.
+
+Twitter Topic ==> 	Consumer	=> 		Application Logic 	=> 		Producer 	=> 		Filtered Kafka Topic.
+
+- This is complecated and error prone especially want to deal with concurrency and error scenarios.
+
+Kafka Streams Hands-on
+---------------------------
+- Filter tweets from "twitter_tweets" by those tweets with user.followers_count > 100. followers_count is a field under user nested object of tweet JSON. finally send the filterred tweets to a new topic "important_tweets"
+
+- http://localhost:9200/tweets/_search?q=*.*
+
+user: {
+id: 1490544710,
+id_str: "1490544710",
+name: "ً",
+screen_name: "kafkafesque",
+location: "winnercity",
+url: null,
+description: "chaotic neutral.",
+translator_type: "none",
+protected: false,
+verified: false,
+followers_count: 67,
+
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-streams-filter-tweets/pom.xml
+
+https://github.com/JavaCodeStream/kafka-beginners/blob/master/kafka-streams-filter-tweets/src/main/java/com/github/simplesteph/kafka/tutorial4/StreamsFilterTweets.java
+
+
+// input topic
+KStream<String, String> inputTopic = streamsBuilder.stream("twitter_tweets");
+KStream<String, String> filteredStream = inputTopic.filter(
+		// filter for tweets which has a user of over 10000 followers
+		(k, jsonTweet) ->  extractUserFollowersInTweet(jsonTweet) > 10000
+);
+filteredStream.to("important_tweets");
+
+// build the topology
+KafkaStreams kafkaStreams = new KafkaStreams(
+		streamsBuilder.build(),
+		properties
+);
+
+// start our streams application
+kafkaStreams.start();
+
+
+
+- create the new topic: "important_tweets"
+D:\work\intellij-workspace\kafka-beginners-practice\kafka-connect>kafka-topics.bat --bootstrap-server localhost:9092 --create --topic important_tweets --partitions 3 --replication-factor 1
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic important_tweets.
+
+D:\work\intellij-workspace\kafka-beginners-practice\kafka-connect>kafka-topics.bat --bootstrap-server localhost:9092 --list
+__consumer_offsets
+first_topic
+important_tweets
+new_topic
+second_topic
+twitter_deletes_connect
+twitter_status_connect
+twitter_tweets
+
+
+- start StreamsFilterTweets
+
+[demo-kafka-streams-1878e9be-8efa-4f37-89a6-8bb230f2194c-StreamThread-1] INFO org.apache.kafka.streams.processor.internals.StreamThread - stream-thread [demo-kafka-streams-1878e9be-8efa-4f37-89a6-8bb230f2194c-StreamThread-1] State transition from PARTITIONS_ASSIGNED to RUNNING
+[demo-kafka-streams-1878e9be-8efa-4f37-89a6-8bb230f2194c-StreamThread-1] INFO org.apache.kafka.streams.KafkaStreams - stream-client [demo-kafka-streams-1878e9be-8efa-4f37-89a6-8bb230f2194c] State transition from REBALANCING to RUNNING
+
+
+- start TwitterProducer
+
+- start kafka-console-consumer for "important_tweets" topic.
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic important_tweets --from-beginning
+
+- search by "followers_count" on the cmd window of kafka-console-consumer, we will see all the tweets messages are now having "followers_count" > 100
+
+Kafka Schema Registry
+------------------------------------------------------------
+- Kafka takes bytes as an input and publishes them.
+- No data verification.
+
+- what if the producer sens bad data?
+- what if a field in JSON message gets renames?
+- what if the data format changes from one dat to another?
+
+- **** The Consumer app will then break **** which is bad.
+
+- So we need data to be self describale.
+- we need to be able to evolve the data without breaking downstream consumers.
+
+What if the Kafka Brokers could verify the message that they receive?
+	- it would break what makes kafka so good.
+	- Kafka does not parse, even read the incoming messages hence no CPU cycle is spent.
+	- Kafka takes bytes as an input without even loading the messages into memory (thats called zero copy)
+	- kafka distributes bytes.
+	- as far as kafka is concerned, it does not even know if your data is an integer, string etc, it just receives from producer and publishes to all the subscribed consumers.
+
+- Hence the Schema Registry has to be a separate component.
+	- our Producer and Consumer App needs to be able to talk to this Schema Registry component.
+	- The Schema Registry must be able to reject bad data.
+	- A common message data format must be agreed upon.
+		- support schema.
+		- support evolution of message format schema.
+		- needs to be lightweight.
+
+- Confluent (creator of Kafka) has created "Confluent Schema Registry" which open sourced and they choose Apache avro as data format.
+
+- Pipeline without Schema Registry:
+Source System 	=> 		Java Producer App 		=>		Kafka brokers		=> 		Java Consumers		=>  		Target Systems
+
+- Confluent Schema Registry Purpose:
+	- Store and retrieves schemas for Producers and Consumers.
+	- Enforce backward / Formard / Full compatibility of topics.
+	- Can decrease the size of the payload of data sent to Kafka.
+
+- Pipeline with Schema Registry:
+	- Producer sends avro content (message) to Kafka and at the same it also send the Schema to Confluent Schema Registry.
+	- Consumer receives/read avro content (messages) from Kafka and also read the corresponsing Schema.
+	- Consumer then use this schema to read the message data.
+
+- Schema Registry: Gotchas
+	- Utilizing a sche registry has a lot of benefits.
+	- BUT it implies you need to:
+		- Set it up well.
+		- Make sure its highly available.
+		- Partially change the producer and consumer code which is one time.
+	- Apache Avro as format is awesome but has learing curve.
+	- The Schema Registry is FREE and open sourced created by Confluent (creator of Kafka)
+
+
+Which Kafka API should I use? Kafka Producer, Consumer, Connect, Streams?
+--------------------------------------------------------------------------------
+I wrote a blog that I'm sure you'll find helpful if you also have that question: https://medium.com/@stephane.maarek/the-kafka-api-battle-producer-vs-consumer-vs-kafka-connect-vs-kafka-streams-vs-ksql-ef584274c1e
+
+
+Case Studies
+================================================================================
+Partition Count & Replication Factor
+--------------------------------------------------------------------------------
+- Best to get these parameters right at the first time.
+	- If the partition count increases during a topic lifecycle, we will break our keys ordering.
+	- If the replication factor increases during a topic lifecycle, we put more pressure on the cluster causing unexpected performance degrade.
+
+How to decide what should be the ideal counts?
+	- Partition
+	- Each partition can handle a throughput of few MB/s (measure it for your setup), ex: 1MB/s or 10 MB/s depending upon the network quality or proximity of the clients etc. hence just measure it and know how much throughput a single partition can have as per your cluster setup.
+	- More partition implies:
+		- Better parallelism, better throughput.
+		- ability to run more consumers in a group to scale.
+		- if we have more brokers, we should have more partition to utilize the resources well.
+		- BUT the more partition we have, The zookeeper will need to perform more elections to choose the leader and also more files will be opened in Kafka.
+
+	- Replication Factor
+		- Should be atleast 2, usually 3, maximum 4
+		- The higher the replication factor (N):
+			- better resilience of your system (N-1 brokers can fail.)
+			- BUT more replication cause higher latency if acks=all
+			- BUT more disk space (50% more if RF is 3 instead of 2)
+		- Guidelines:
+			- set it to 3 to get started if we have atleast 3 brokers.
+			- If RF is an issue, get a better broker machine but never compromise on RF.
+
+	- Cluster
+		- a broker should not hold more than 2000 to 4000 partitions.
+		- a cluste should have max 20,000 partitions across all brokers.
+
+Kafka Topics Naming Convention
+-------------------------------------------------------------------------------
+https://medium.com/@criccomini/how-to-paint-a-bike-shed-kafka-topic-naming-conventions-1b7259790073
+
+
+
+
+Case Studies
+================================================================================
+Video Analytics - MovieFlix
+--------------------------------------------------------------------------------
+MovieFlix is a company that allows you to watch TV shows and movies on demand. the business wants the following capabilities:
+
+- Make sure the user can resume the video where they left it off.
+- Build a user profile in real time.
+- Recommend the next show in real time.
+- Store all the user data for analytics.
+
+- How to implement Kafka here?
+
+- Video Player in the rbowser while playing sends video positioning info for each user to a Kafka topic called: "show_position" in real time. These  data can be used for the same user to be able to resume from where they left off using "Resuming Consumer Service" which will read from this topic and server to the "Browser Video Player".
+
+- we can have a Kafka Streams app for the Recommendation Engine in real time which can again read the "show_position" topic to know how far user have viewed certain videos and based on than can perform some ML logic which can again be put back to another topic "recommendations". Then a "Recommendation Consumer Service" which then the Browser Video player can read from show recommendendations to the users.
+
+- Finally all these data are very helpful, hence there should be an "Analytics Consumer" reading both from "show_position" and "recommendations" topics and push data to an Analytic Store (ex: Hadoop).
+
+- Look at the Kafka-Case-Strudy.docx for the diagrams.
+
+- "show_position" topic configs:
+	- This topic will have multiple producers, producing video position data in real time in high volume.
+	- should have > 30 partitions.
+	- "user_id" should be the key of the message for orderring based of user.
+
+- "recommendations" topic configs:
+	- 	The Kafka Streams recommendation engine may source data from the analytics store for historical trainings.
+	- will be a low volume topic.
+	- "user_id" should be the key of the message for orderring based of user.
+
+
+
+IOT Example: GetTaxi
+--------------------------------------------------------------------------------
+GeTaxi is a company that allows people to match with taxi drivers on demaind, the business wants the following capabilities:
+
+- The user should match with a close by driver.
+- The pricing should "surge" if the number of drivers are low or the number of users are high in real time.
+- All the real time position data before and during the ride should be stored in an analytics store so that the cost can be computed accurately.
+
+- How to implement Kafka here?
+
+- There should be a "User Possition Producer Service App" receiving real time user position data from the "Taxi app" and push them to "user_position" topic. hence high volume of messages.
+- Similarly, There should be a "Taxi Possition Producer Service App" receiving real time taxi position data from the "Taxi app" and push them to "taxi_position" topic. hence high volume of messages.
+- 2 separate topic since they are very different entity data.
+
+- There should be a "surge_procing" topic which will be populated by a Kafka Streams app "Surge Pricing Computation Model" with simple or may be complicated rules Or we can ven use Apache Spark Streams as well. read combined data from "user_position" and "taxi_position" topics and output the result to "surge_procing" topic
+- Now these above surge pricing data can be feeded back to the "Taxi App" for the cost of service / estimated cost of service. for this we need a "Taxi Cost Service Consumer" read data from "surge_procing" topic
+
+- Finally our data scientist happy, we will pull data from all these topics and stote in a reliable Analytics Store such as "Amazon S3". there is a Kafka Connect (Consumer) readily available for Consumer Sinks to S3.
+
+
+- "user_position" and "taxi_position" topic configs:
+	- This topic will have multiple producers, producing position data in real time in high volume.
+	- should be highly distributed. can have > 30 partitions.
+	- "user_id"/"taxi_id" respectively should be the key of the message for orderring based of user.
+	- all these real time position data is ephemeral and does not need to be kept in the Kafka for long time hence less retention period should be configured.
+
+- "surge_procing" topic configs:
+	- Computaion of Surge pricing comes from the Kafka Streams App.
+	- Surge pricing may be regional and hence less volume data.
+	- Other topics such as "weather", or "events" etc can be included in the Kafka Streams app for better accuracy and enhancement of our model.
+
+
+CQRS (Comment Query Read Segregation): MySocialMedia
+--------------------------------------------------------------------------------
+MySocialMedia is a company that allows users to post images and others to react by using "likes" or "comments". the business wants the following capabilities:
+
+- User should be able to post, like and comments.
+- Users should see total no. of likes and comments per post in real time.
+- High volumen if data is expected on occations or events etc.
+- Users should also be able to see "trending" posts.
+
+
+- How to implement Kafka here?
+
+- 3 separate topics i.e. "posts", "likes" and "comments"
+- Users going to create posts (hashtags/links etc..), there should be some Posting Service (Producer), sneds these data to "posts" topic.
+- All user like/comments events should also invoke a "Like/Comments Service (Producer)" to send the data to "likes" and "comments" topic.
+- Now what we ant at the end, all the posts with their likes/comments counts. we have realize the data comes from all over from multiple people, liking/commenting at the same time, so we were doing this using a traditional DB, the DB could slow/there could be some race condition etc.
+	- using Kafka we will be able to de-couple the prduction of data to the aggregation of data. for this we will use "Kafka Streams", read the data from "posts", "likes" and "comments"  topics and it will perform some aggregation such as "how many likes/comments for my post", and post back to a new topic "posts_with_counts".
+	- Now similarly if we want trending posts, we can have a new Kafka Streams app i.e. a new query using Kafka Streams, that crawls for trending posts i.e. posts with higher likes or comments or combination of both in past hours and outputs the result to a new topic "trending_posts"
+	- these "posts_with_counts" and "trending_posts" are consumed by "Refresh feed service (consumer)"  and "Trending Feed Service (Consumer or Kafka Connect Sinks" and finally put these into MySocialMedia website/app.
+
+- Why this design model called CQRS:
+	- on left hand side we have commands i.e. user clicks/likes/comments.
+	- on riht hand side, we have queries and these are de-coupled. and the de-cpupling makes these solution architecture scalabale.
+	- Finally we read these data and render into website.
+
+- "posts" topic configs:
+	- This topic will have multiple producers, producing position data in real time in high volume.
+	- should be highly distributed. can have > 30 partitions.
+	- "user_id" should be the key of the message for orderring the posts by user id.
+	- we probably want higher retention period of data.
+
+- "likes" and "comments"  topics config"
+	- multiple producers with very high volume of data flow.
+	- should be highly distributed.
+	- "post_id" should be the key of the messages to help our aggregation logic which is by per posts.
+
+- message format in Kafka:
+	- the message data should be formatted as "events"
+	- User_123 created a post_id 456 at 2 PM.
+	- User_234 liked post_id 456 at 3 PM.
+	- User_123 deleted a post_id 456 at 6 PM.
+
+
+Financial application: MyBank
+--------------------------------------------------------------------------------
+MyBank is a company that allows real time banking for its users. It wants to deply a brand new capability to alert users ub case of large transactions.
+
+- The transaction data already exists in the Database (SQL DB)
+- Threshold for the alert can be defined by the users.
+- Alerts must be sent in real time.
+
+- How would we implement using Kafka?
+
+- There must be a "bank_transactions" topic, but all these bank transactions are already in a SQL DB, hence we need a "Kafka Connect Source CDC Connector (Debezium)" which will read all the transactions in real time and put them into Kafka topic.
+- we also need a "user_settings" topic, the Users set their threshold in Bank app, and the "App Threshold service (Producer)" sends data to this topic.
+- Now we need a "user_alerts" topic which will be populated by a Kafka Streams app (real time big transactions detection) by combining data from "bank_transactions" and "user_settings" topics, then outputs the result.
+- to send the alert, we need a small "Notification Service (consumer)" which will read from "user_alerts" topic and notify to the specific users via SMS/app push notifications.
+
+- "bank_transactions" topic configs:
+	- Kafka Connect source is a great way to export data from existing Databases reliably.
+	- There are many CDC connectors already available for PostgresSQL, Oracle, SQLServer, MongoDB etc.
+
+- Kafka Streams App:
+		- When users changes their settings, alerts wont be triggered for the past transactions because we only read from new transactions onwards.
+
+
+
+
+Kafka Cluster Setup High Level Architecture Overview
+=================================================================================
+- we need multiple broker machines in different data centers (racks) to distribute the load. also a cluster of atleast 3 zookeeper.
+
+- Kafka Monitoring and Operations:
+	- Kafka exposes metrics through JMX
+	- These metrics are highly important for monitoring Kafka and ensuring the system are behaving correctly under load.
+	- common place to host these metrics:
+		- ELK stack (ElasticSearch + Kibana)
+		- Datadog
+		- NewRelic
+		- Confluent Control Center.
+		- Prometheus.
+		- etc.
+
+- Some imporatnt metrics:
+	- "Under Replicated Partitions" - No. of partitions have problems with the ISR. may indicate a high load on the system.
+	- "Request Handlers" - Utilization of threads for IO, network, etc, overall utilzation Kafka brokers.
+	- "Request timing" - how long it takes to response a request. lower is better.
+
+- Kafka Security (Encryption / AuthN and AuthZ)
+	- as of now: any client can access the Kafka cluster (AuthN)
+	- The client can publish/consume any topic data (AuthZ)
+	- All the data being sent is fully visible on the network (encryption)
+	- Hence someone could intercept data being sent.
+	- someone could publish bad data or steal data.
+	- someone could delete topics in prd cluster.
+
+	- Encryptio:
+		- ensures data exchanged securely between the clients and the broker.
+
+		- using Kafka broker port 9092 is withour any secure layer. the data exchanges is visible.
+		- using Kafka broker port 9093 is over SSL secure layer.
+
+	- Authenticateion:
+		- Authenticate in Kafka can be configured in few ways:
+			- SSL AuthN: client authenticate to kafka using SSQL certificates.
+			- SASL AuthN:
+				- PLAIN: client authenticate using plain text username and password (weak - easy to setup)
+				- Kerberos: such as Microsoft Active Directory (strong - hard to setup)
+				- SCRAM: username/password (strong - medium to setup)
+
+	- Authorization:
+		- Once the clinet is authenticated, Kafka can verify its identify.
+		- it still needs to be combined with authorization, so that kafka know that "User Alice can view topic - 'bank_transactions'"
+		- "User bob can not view topic 'trucks'"
+		- ACL (access control Lists) have to be maintained by the admina and onboad new users.
+
+
+Advanced Topic Configurations
+================================================================================================
+- Brokers have defaults for all topic config params.
+- These params impact performance and topic behavior.
+- Some topic need different balues than defaults.
+	- Replication Factor
+	- # of Partitions.
+	- Message size.
+	- Compression level
+	- Log cleanup policy
+	- Min ISR
+	- Other configs.
+
+
+Hands-on topic configuration
+-------------------------------------------------------------------------------------------------
+https://kafka.apache.org/documentation/#brokerconfigs
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic configured_topic --create --partitions 3 --replication-factor 1
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic configured_topic.
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic configured_topic --describe
+Topic: configured_topic PartitionCount: 3       ReplicationFactor: 1    Configs: segment.bytes=1073741824
+        Topic: configured_topic Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: configured_topic Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+        Topic: configured_topic Partition: 2    Leader: 0       Replicas: 0     Isr: 0
+
+- Look at the Configs i.e. Configs: segment.bytes=1073741824, default 1 config only.
+
+"kafka-topics" to set conigs
+------------------------------
+- kafka-topics.bat --bootstrap-server localhost:9092 --topic employee_salary --create --partitions 3 --replication-factor 1 --config cleanp.policy=compact --confg min.cleanable.dirty.ratio=0.001 --config segment.ms=5000
+
+- use --describe to see the config.
+- kafka-topics.bat --bootstrap-server localhost:9092 --topic employee_salary --describe
+
+"kafka-configs" command
+-------------------------
+
+- to add/modify/delete configs use "kafka-configs" command. just run the command, it will show all the options available.
+- kafka-configs.bat
+
+- shows emoty if there are no configs for the given topic
+C:\Users\pauls>kafka-configs.bat --bootstrap-server localhost:9092 --entity-type topics --entity-name configured_topic --describe
+Dynamic configs for topic configured_topic are:
+
+
+- for example: lets add the min.insync.replicas to 2.
+C:\Users\pauls>kafka-configs.bat --bootstrap-server localhost:9092 --entity-type topics --entity-name configured_topic --add-config min.insync.replicas=2 --alter
+Completed updating config for topic configured_topic.
+
+C:\Users\pauls>kafka-configs.bat --bootstrap-server localhost:9092 --entity-type topics --entity-name configured_topic --describe
+Dynamic configs for topic configured_topic are:
+  min.insync.replicas=2 sensitive=false synonyms={DYNAMIC_TOPIC_CONFIG:min.insync.replicas=2, DEFAULT_CONFIG:min.insync.replicas=1}
+
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic configured_topic --describe
+Topic: configured_topic PartitionCount: 3       ReplicationFactor: 1    Configs: min.insync.replicas=2,segment.bytes=1073741824
+        Topic: configured_topic Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: configured_topic Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+        Topic: configured_topic Partition: 2    Leader: 0       Replicas: 0     Isr: 0
+
+C:\Users\pauls>kafka-configs.bat --bootstrap-server localhost:9092 --entity-type topics --entity-name configured_topic --delete-config min.insync.replicas --alter
+Completed updating config for topic configured_topic.
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic configured_topic --describe
+Topic: configured_topic PartitionCount: 3       ReplicationFactor: 1    Configs: segment.bytes=1073741824
+        Topic: configured_topic Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: configured_topic Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+        Topic: configured_topic Partition: 2    Leader: 0       Replicas: 0     Isr: 0
+
+Partition & Segments
+--------------------------------------------------------------------------------------------------
+- Topics are made of Partitions.
+- Partitions are againg broken down to multiple segments for each partition.
+Partition-0			Partition-0			Partition-0				Partition-0
+Segment-0			Segment-1			Segment-2				Segment-3 (ACTIVE)
+Offset 0-957		Offset 958-1675		Offset 1676-2453		Offset 2454-?
+
+- last segment are called active since the messages are actively being written to the same segment of the partition. when the segment is closed, a new segment gets created with the ending segment.
+
+- only one segment is ACTIVE oer partition.
+- 2 segment settings available:
+	- "log.segment.bytes": maximum size of a single segment in bytes. default 1 GB
+		- a smaller "log.segment.bytes" means less than 1GB, a) More segments per pertitions, b) Log compaction happens more often, c) BUT Kafka then has to open more files which can cause "TOO MANY OPEN FILES" error.
+		- ask yourself: how fast we want new segments to be created based on throughput? if it 1 day fine with 1GB, if it is 1 weeks may be we can set a smaller size.
+	- "log.segment.ms": The time Kfka will wait before committing/closing the segment if not full. default 1 week.
+		- means the logs will be rolled over per week, smaller time means, more frequest log compaction.
+
+- Each segment also contain 2 types of indexes:
+	- A Offset to position index: allows kafka where to read to find a message.
+	- A timestamp to offset index: allows kafka to find a message with a timestamp.
+Partition-0			Partition-0			Partition-0				Partition-0
+Segment-0			Segment-1			Segment-2				Segment-3 (ACTIVE)
+Offset 0-957		Offset 958-1675		Offset 1676-2453		Offset 2454-?
+PositionIndex-0		PositionIndex-1		PositionIndex-2			PositionIndex-3
+TimestampIndex-0	TimestampIndex-1	TimestampIndex-2		TimestampIndex-3
+
+- Now, if we see the Kafka logs directory:
+# A comma separated list of directories under which to store log files
+#log.dirs=/tmp/kafka-logs
+log.dirs=D:/work/learn/kafka/kafka_2.12-2.6.0/data/kafka
+
+cd 	D:/work/learn/kafka/kafka_2.12-2.6.0/data/kafka
+D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka>dir
+ Volume in drive D is WHITEBOX
+ Volume Serial Number is 6A51-4161
+
+ Directory of D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka
+
+03-01-2021  22:54    <DIR>          .
+03-01-2021  22:54    <DIR>          ..
+03-01-2021  22:29                 0 .lock
+03-01-2021  22:29                 0 cleaner-offset-checkpoint
+03-01-2021  22:30    <DIR>          configured_topic-0
+03-01-2021  22:30    <DIR>          configured_topic-1
+03-01-2021  22:30    <DIR>          configured_topic-2
+03-01-2021  22:29    <DIR>          first_topic-0
+03-01-2021  22:29    <DIR>          important_tweets-0
+03-01-2021  22:29    <DIR>          important_tweets-1
+03-01-2021  22:29    <DIR>          important_tweets-2
+03-01-2021  22:54                 6 log-start-offset-checkpoint
+03-01-2021  22:29                93 meta.properties
+03-01-2021  22:29    <DIR>          new_topic-0
+03-01-2021  22:54             1,756 recovery-point-offset-checkpoint
+03-01-2021  22:54             1,756 replication-offset-checkpoint
+03-01-2021  22:29    <DIR>          second_topic-0
+03-01-2021  22:29    <DIR>          second_topic-1
+03-01-2021  22:29    <DIR>          second_topic-2
+03-01-2021  22:29    <DIR>          twitter_deletes_connect-0
+03-01-2021  22:29    <DIR>          twitter_deletes_connect-1
+03-01-2021  22:29    <DIR>          twitter_deletes_connect-2
+03-01-2021  22:29    <DIR>          twitter_status_connect-0
+03-01-2021  22:29    <DIR>          twitter_status_connect-1
+03-01-2021  22:29    <DIR>          twitter_status_connect-2
+03-01-2021  22:29    <DIR>          twitter_tweets-0
+03-01-2021  22:29    <DIR>          twitter_tweets-1
+03-01-2021  22:29    <DIR>          twitter_tweets-2
+03-01-2021  22:29    <DIR>          twitter_tweets-3
+03-01-2021  22:29    <DIR>          twitter_tweets-4
+03-01-2021  22:29    <DIR>          twitter_tweets-5
+03-01-2021  22:29    <DIR>          __consumer_offsets-0
+03-01-2021  22:29    <DIR>          __consumer_offsets-1
+03-01-2021  22:29    <DIR>          __consumer_offsets-10
+03-01-2021  22:29    <DIR>          __consumer_offsets-11
+03-01-2021  22:29    <DIR>          __consumer_offsets-12
+03-01-2021  22:29    <DIR>          __consumer_offsets-13
+03-01-2021  22:29    <DIR>          __consumer_offsets-14
+03-01-2021  22:29    <DIR>          __consumer_offsets-15
+03-01-2021  22:29    <DIR>          __consumer_offsets-16
+03-01-2021  22:29    <DIR>          __consumer_offsets-17
+03-01-2021  22:29    <DIR>          __consumer_offsets-18
+03-01-2021  22:29    <DIR>          __consumer_offsets-19
+03-01-2021  22:29    <DIR>          __consumer_offsets-2
+03-01-2021  22:29    <DIR>          __consumer_offsets-20
+03-01-2021  22:29    <DIR>          __consumer_offsets-21
+03-01-2021  22:29    <DIR>          __consumer_offsets-22
+03-01-2021  22:29    <DIR>          __consumer_offsets-23
+03-01-2021  22:29    <DIR>          __consumer_offsets-24
+03-01-2021  22:29    <DIR>          __consumer_offsets-25
+03-01-2021  22:29    <DIR>          __consumer_offsets-26
+03-01-2021  22:29    <DIR>          __consumer_offsets-27
+03-01-2021  22:29    <DIR>          __consumer_offsets-28
+03-01-2021  22:29    <DIR>          __consumer_offsets-29
+03-01-2021  22:29    <DIR>          __consumer_offsets-3
+03-01-2021  22:29    <DIR>          __consumer_offsets-30
+03-01-2021  22:29    <DIR>          __consumer_offsets-31
+03-01-2021  22:29    <DIR>          __consumer_offsets-32
+03-01-2021  22:29    <DIR>          __consumer_offsets-33
+03-01-2021  22:29    <DIR>          __consumer_offsets-34
+03-01-2021  22:29    <DIR>          __consumer_offsets-35
+03-01-2021  22:29    <DIR>          __consumer_offsets-36
+03-01-2021  22:29    <DIR>          __consumer_offsets-37
+03-01-2021  22:29    <DIR>          __consumer_offsets-38
+03-01-2021  22:29    <DIR>          __consumer_offsets-39
+03-01-2021  22:29    <DIR>          __consumer_offsets-4
+03-01-2021  22:29    <DIR>          __consumer_offsets-40
+03-01-2021  22:29    <DIR>          __consumer_offsets-41
+03-01-2021  22:29    <DIR>          __consumer_offsets-42
+03-01-2021  22:29    <DIR>          __consumer_offsets-43
+03-01-2021  22:29    <DIR>          __consumer_offsets-44
+03-01-2021  22:29    <DIR>          __consumer_offsets-45
+03-01-2021  22:29    <DIR>          __consumer_offsets-46
+03-01-2021  22:29    <DIR>          __consumer_offsets-47
+03-01-2021  22:29    <DIR>          __consumer_offsets-48
+03-01-2021  22:29    <DIR>          __consumer_offsets-49
+03-01-2021  22:29    <DIR>          __consumer_offsets-5
+03-01-2021  22:29    <DIR>          __consumer_offsets-6
+03-01-2021  22:29    <DIR>          __consumer_offsets-7
+03-01-2021  22:29    <DIR>          __consumer_offsets-8
+03-01-2021  22:29    <DIR>          __consumer_offsets-9
+               6 File(s)          3,611 bytes
+              75 Dir(s)  210,806,194,176 bytes free
+
+- All these folders are for the partitions for each topic we have created.
+
+D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka>cd first_topic-0
+
+D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka\first_topic-0>dir
+ Volume in drive D is WHITEBOX
+ Volume Serial Number is 6A51-4161
+
+ Directory of D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka\first_topic-0
+
+03-01-2021  22:29    <DIR>          .
+03-01-2021  22:29    <DIR>          ..
+03-01-2021  22:29        10,485,760 00000000000000000000.index
+03-01-2021  22:29                 0 00000000000000000000.log
+03-01-2021  22:29        10,485,756 00000000000000000000.timeindex
+03-01-2021  22:29                11 leader-epoch-checkpoint
+
+
+Log (i.e. parition data) Cleanup Policy
+---------------------------------------------------------------------------------
+- Kafka clusters make it data expire. which happens according to a policy.
+- the concept of expiring the data is called log cleanup.
+
+- Policy 1: cleanup.policy=delete (default)
+------------------------------------------------
+	- deletes data based on age of data (default 1 week)
+	- depends on "log.retention.hours" default 168 days i.e. 1 week. no. of hours to keep the messages in Kafka.
+	- Higher retention mean more disk space.
+	- lower retention means less data is retained (can be a problem if the consumers are down for too long, they can miss the messages.)
+	- depends on "log.retention.bytes" default -1 i.e. infinite, max size in bytes for each partition.
+	- basically the new data gets written to new ACTIVE segments and we have a bunch of old segments. messages from old segments will be deleted based on time or space rules and eventually the segments itself get deleted.
+	- 2 common pair of options:
+		- very common is "one week of retention" : "log.retention.hours=168" & "log.retention.bytes=-1"
+		- Infinite time retention bounded by 500MB:  "log.retention.hours=17520" & "log.retention.bytes=524288000" i.e. very high "log.retention.hours" and byte value of 500 MB "log.retention.bytes"
+
+- Policy 2: cleanup.policy=compact (default for Kafka's internal topic used for soring offset data: __consumer_offsets)
+-----------------------------------------------------------------------------------------------------------------------------
+	- run the kafka-topics.bat describe for __consumer_offsets and see the config i.e. "cleanup.policy=compact"
+D:\work\learn\kafka\kafka_2.12-2.6.0\data\kafka\first_topic-0>kafka-topics.bat --bootstrap-server localhost:9092 --topic __consumer_offsets --describe
+Topic: __consumer_offsets       PartitionCount: 50      ReplicationFactor: 1    Configs: compression.type=producer,cleanup.policy=compact,segment.bytes=104857600
+        Topic: __consumer_offsets       Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: __consumer_offsets       Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+		...
+		..
+		..
+		.
+
+	- deletes based on keys of the messages.
+	- deletes old duplicate keys after the active segment is committed.
+	- Log compaction ensures that your log (i.e. partition data) contains at least the last known value (latest value) for a specific key within a partition. basically, kafka with keep only the latest "update" for a key in the log.
+	- example: topic name: employee_salary
+
+	Segment-0
+	key-John {'salary': "80000"}  	-- offset-0
+	key-Mark {'salary': "90000"}	-- offset-1
+	key-Lisa {'salary': "95000"}	-- offset-2
+	..
+	..
+	..
+	-------------------
+	Segment-1
+	key-Lisa {'salary': "110000"}	-- offset-45
+	key-John {'salary': "100000"}  	-- offset-46
+	..
+	..
+
+	- here if we see that Lisa and John salary got updated for the same key. with this pocily enabled, When Kafka performs log compaction, old John and Lisa messages gets deleted because there is newer key available and as a result of Log compaction we get a new segment, BUT offsets does not change just some data get deleted.
+
+	- So any consumer that is reading from the tail of the log (most current data i.e. as and when data comes in), will still read all the messages sent to the topic. just like normal.
+		- Orderring of messages is retained, log compaction only removes some messages, but does not re-order them. Offsets are just skipped if a message is missing in Kafka.
+
+	- Deleted messages can still be read by he consumers for a period of "delete.retention.ms" (default 24 hours)
+
+	- Log Compaction - Myth Busting:
+		- It does not prevent from pushing duplicate data to Kafka.
+		- de-duplicate is done only when a segment is committed/closed. Cnsumer will still read from tail as soon as the message arrives.
+		- for preventing duplicate of message we should still use an Idempotent Producer.
+		- Log compaction can fail time to time. its is an optimization and compaction thread might crash.
+		- Make sure we have enough memory for log compaction to trigger, if we see error logs, restart Kafka, bug in Kafka 2.0.
+		- as of now there is no Kfka API available to trigger log compaction, it happend by its own.
+		- after the active segment get committed/closed, it does the compaction i.e. it looks up all the old segments and removes any duplicates and finally merge all the smaller old segments to a new segment (not active) (bounded by the max size), and starts writing to another new active segment.
+
+		Offset 0-99			Offset 100-199			Offset 200-299			Active Segment
+
+		After compaction
+
+		Offset 0-299			Active Segment
+
+	- settings:
+		- enable log compaction as log cleanup policy by "log.cleanup.policy=compact"
+		- "segment.ms" (default 7 days): max amount of time to wait to close active segment. ex: if the value is 5000 i.e. 5 sec which will create new segments every 5 sec and compaction will be triggered on committing/closing the current segment.
+		- "Segment.bytes" (default 1GB): max size of segment.
+		- "delete.retention.ms" (default 24 days): wait for permanently deleting old duplicate message which was marked for delete during compaction.
+		- "min.cleanable.dirty.ratio" (default 0.5): less value means more efficient cleaning (it just requesting Kafka to perform compaction more often by setting lower value)
+
+
+Why? Log Cleanup
+-------------------
+- Deleting data from Kafka allows us to:
+	- control the disk space utilization and delete obsolete data.
+	- reduce kafka cluster maintenance work.
+
+When? How Often Log cleanup happen?
+------------------------------------
+- Log cleanup happens on partition segments anytime the segment is committed/closed.
+- Smaller / more segments means that log cleanup will happen more often. If it happen too often, consumes more CPU/RAM.
+- The cleaner job checks if the log cleanup should happen every 15 sec ("log.cleanup.backoff.ms")
+
+
+
+Log compaction Hands-on
+----------------------------------------------------------------------------------------------------------
+NOTE: Windows Kadka binary has some bug hence cant create topic with compact cleanup policy. I tried and later kafka server started throwing error continously as soon as the first compaction kickedoff. Even after deleting the topic did not help, nor even after deleting the kafka log dir.
+
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic employee_salary_compact --create --partitions 1 --replication-factor 1 --config cleanup.policy=compact --config min.cleanable.dirty.ratio=0.001 --config segment.ms=5000
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic employee_salary_compact.
+
+here:
+we set partitions to 1 to see the changes
+setting configs for cleanp.policy=compact, min.cleanable.dirty.ratio=0.001 (means requesting Kafka to perform compaction more often by setting lower value), segment.ms=5000 (Kafka to commit active segments more often and compaction will be triggered on committing/closing the current segment)
+
+
+- use --describe to see the config.
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092 --topic employee_salary_compact --describe
+Topic: employee_salary_compact  PartitionCount: 1       ReplicationFactor: 1    Configs: cleanup.policy=compact,segment.bytes=1073741824,min.cleanable.dirty.ratio=0.001,segment.ms=5000
+        Topic: employee_salary_compact  Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+
+
+- kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic employee_salary_compact --from-beginning --property print.key=true --property key.separator=,
+
+
+- kafka-console-producer.bat --bootstrap-server localhost:9092 --topic employee_salary_compact --property parse.key=true --property key.separator=,
+Mark, salary: 10000
+Lucy, salary: 20000
+Bob, salary: 15000
+Patrick, salary: 30000
+
+
+- we will see these message gets consumed in the console-consumer.
+
+- if we go to the kafka log dir and the employee_salary_compact-0 partition folder i.e. data/kafka/employee_salary_compact, we will see some file named: 000000000000000000002.timeindex.deleted i.e. log compaction has started.
+
+
+- start the console-consumer at this point in time, we should see all the same messages again since all the keys as of now are unique.
+
+- No just add below messages in console-producer:
+Mark, salary: 15000
+Patrick, salary: 25000
+John, salary: 10000
+
+- we will see all these messages comming in console-consumer as soon as they are produced.
+
+- BUT if we stop the consumer and restarted, we should see, that each key has only the latest value. (ex: Mark), i.e. old values for the same key got compacted and marked for delete.
+
+- for Patrick, probably the compaction did not kicked-off yet. adding few more records in console-producer and restarting the console-consumer will result in showing the latest value for Patrick
+
+kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic employee_salary_compact --from-beginning --property print.key=true --property key.separator=,
+Mark, salary: 15000
+Lucy, salary: 20000
+Patrick, salary: 30000
+Bob, salary: 15000
+Patrick, salary: 25000
+John, salary: 10000
+
+
+min.insync.replicas
+--------------------------------------------------------------------------------
+- "min.insync.replicas" can only be set at Topic or Broker level.
+- Acks=all must be used in conjunction with "min.insync.replicas"
+- min.insync.replicas=2 means at least 2 brokers that are ISR (including leader) must response for the write request to complete/.
+- That means, with replication.factor=3, min.insync.replicas=2 and Acks=all, we can tolerate only 1 broker going down, otherwise the producer will receive an exception while sending messages to Kafka.
+
+
+Starting Kafka differently
+================================================================================
+
+Using Kafka Confluent CLI
+--------------------------------------------------------------------------------
+- Confluent CLI is another way to run Kafka services.
+- download the CLI for specific OS (unix), better to use Unix rather the windows.
+- ./confluent local start
+
+- This 1 single command will start all available service i.e. Kafka Zookeeper, Kafka server, Schema-Registry, Kafka-Rest, Kafka-Connect, Kafka-Ksql-Server., Kafka-Control-Center.
+
+- Now we can use the usual commands like kafka-topics / kafka-configs / kafka-console-consumer, kafka-console-producer etc.
+
+- ./confluent local stop -- this will stop all the kafka services.
+
+- ./confluent local start kafka  --- will start only the kafka zookeeper and Kafka server only.
+- ./confluent local destroy -- will stop any running services
+
+
+Starting multi-broker Kafka Cluster Using Binaries
+--------------------------------------------------------------------------------
+- as of now, so far we were running kafka on one broker.
+- we can also create a cluster of kafka brokers in all OS by following the below settings.
+
+- create 3 log dirs:
+D:/work/learn/kafka/kafka_2.12-2.7.0/data/kafka0
+D:/work/learn/kafka/kafka_2.12-2.7.0/data/kafka1
+D:/work/learn/kafka/kafka_2.12-2.7.0/data/kafka2
+
+- also create 2 server.properties files in config folder and edit these files.
+D:\work\learn\kafka\kafka_2.12-2.7.0\config
+
+server0.properties
+
+broker.id=0
+listeners=PLAINTEXT://:9092    (uncomment this)
+num.partitions=3
+log.dirs=D:/work/learn/kafka/kafka_2.12-2.7.0/data/kafka0
+
+
+
+
+server1.properties
+
+broker.id=1
+listeners=PLAINTEXT://:9093    (uncomment this)
+num.partitions=3
+log.dirs=D:/work/learn/kafka/kafka_2.12-2.7.0/data/kafka1
+
+server2.properties
+
+broker.id=2
+listeners=PLAINTEXT://:9094    (uncomment this)
+num.partitions=3
+log.dirs=D:/work/learn/kafka/kafka_2.12-2.7.0/data/kafka2
+
+
+- start the zookeeper in a new cmd
+D:\work\learn\kafka\kafka_2.12-2.7.0>zookeeper-server-start.bat config\zookeeper.properties
+
+- start the kafka server using these above 3 server.properties in 3 different cmd.
+
+D:\work\learn\kafka\kafka_2.12-2.7.0>kafka-server-start.bat config\server0.properties
+
+[2021-01-06 10:43:53,667] INFO [KafkaServer id=0] started (kafka.server.KafkaServer)
+
+D:\work\learn\kafka\kafka_2.12-2.7.0>kafka-server-start.bat config\server1.properties
+
+[2021-01-06 10:45:00,132] INFO [KafkaServer id=1] started (kafka.server.KafkaServer)
+
+D:\work\learn\kafka\kafka_2.12-2.7.0>kafka-server-start.bat config\server2.properties
+
+[2021-01-06 10:45:55,329] INFO [KafkaServer id=2] started (kafka.server.KafkaServer)
+
+- all 3 brokers have now started.
+
+- open a cmd and create a topic with replication-factor=3, we now should be able to create.
+
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092,localhost:9093,localhost:9094 --create --topic many_reps --partitions 6 --replication-factor 3
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic many_reps.
+
+
+kafka-topics.bat --bootstrap-server localhost:9092,localhost:9093,localhost:9094 --topic many_reps --describe
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9092,localhost:9093,localhost:9094 --topic many_reps --describe
+Topic: many_reps        PartitionCount: 6       ReplicationFactor: 3    Configs: segment.bytes=1073741824
+        Topic: many_reps        Partition: 0    Leader: 2       Replicas: 2,0,1 Isr: 2,0,1
+        Topic: many_reps        Partition: 1    Leader: 1       Replicas: 1,2,0 Isr: 1,2,0
+        Topic: many_reps        Partition: 2    Leader: 0       Replicas: 0,1,2 Isr: 0,1,2
+        Topic: many_reps        Partition: 3    Leader: 2       Replicas: 2,1,0 Isr: 2,1,0
+        Topic: many_reps        Partition: 4    Leader: 1       Replicas: 1,0,2 Isr: 1,0,2
+        Topic: many_reps        Partition: 5    Leader: 0       Replicas: 0,2,1 Isr: 0,2,1
+
+- here, example: Partition: 5 is replicated in broker 0, 2 and 1 (Isr: 0,2,1) out of which broker 0 is the leader of the Partition: 5 .
+
+- In case we give in-correct broker addresses:
+
+C:\Users\pauls>kafka-topics.bat --bootstrap-server localhost:9095,localhost:9096,localhost:9097 --topic many_reps --describe
+[2021-01-06 10:52:09,626] WARN [AdminClient clientId=adminclient-1] Connection to node -1 (localhost/127.0.0.1:9095) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2021-01-06 10:52:11,648] WARN [AdminClient clientId=adminclient-1] Connection to node -3 (localhost/127.0.0.1:9097) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2021-01-06 10:52:13,681] WARN [AdminClient clientId=adminclient-1] Connection to node -2 (localhost/127.0.0.1:9096) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2021-01-06 10:52:15,707] WARN [AdminClient clientId=adminclient-1] Connection to node -1 (localhost/127.0.0.1:9095) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+Terminate batch job (Y/N)? y
+
+- Now to produce some data: It is good to use more than 1 or  broker addresses to avoid connecting to  broker which may be down during that time.
+
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9092,localhost:9093,localhost:9094 --topic many_reps
+>hi
+>how are you
+>I am fine
+>testing kafka cluster in 3 brokers
+>Terminate batch job (Y/N)? y
+
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092,localhost:9093,localhost:9094 --topic many_reps --from-beginning
+I am fine
+hi
+how are you
+testing kafka cluster in 3 brokers
+
+- Now we can also use any broker addresses while produce/consumer.
+
+C:\Users\pauls>kafka-console-producer.bat --bootstrap-server localhost:9094 --topic many_reps
+>trying to send more messages
+>to any partition
+>lets see how its works
+>Terminate batch job (Y/N)? y
+
+C:\Users\pauls>kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic many_reps --from-beginning
+to any partition
+hi
+lets see how its works
+I am fine
+trying to send more messages
+how are you
+testing kafka cluster in 3 brokers
+
+- if we want to see the data, can go to the data/kafka0 or data/kafka1 and data/kafka2
+
+
